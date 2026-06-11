@@ -1,0 +1,14 @@
+# Publishing is allow-listed via package.json "files" (dist + README + LICENSE).
+# This file is a belt-and-suspenders exclude for everything dev-only.
+src/
+tests/
+scripts/
+examples/
+docs/
+.github/
+*.config.ts
+tsconfig.json
+.env
+.env.*
+*.tsbuildinfo
+coverage/

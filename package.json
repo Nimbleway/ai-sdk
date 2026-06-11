@@ -1,0 +1,74 @@
+{
+  "name": "@nimble-way/ai-sdk",
+  "version": "0.1.0",
+  "description": "Nimble Web Search as a ready-made tool for the Vercel AI SDK.",
+  "type": "module",
+  "license": "Apache-2.0",
+  "author": "Nimble",
+  "homepage": "https://github.com/Nimbleway/ai-sdk",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Nimbleway/ai-sdk.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Nimbleway/ai-sdk/issues"
+  },
+  "keywords": [
+    "nimble",
+    "vercel",
+    "ai-sdk",
+    "ai",
+    "web-search",
+    "search",
+    "tool",
+    "llm",
+    "agent"
+  ],
+  "sideEffects": false,
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "prepublishOnly": "pnpm run build"
+  },
+  "dependencies": {
+    "@nimble-way/nimble-js": "^0.14.0"
+  },
+  "peerDependencies": {
+    "ai": "^6",
+    "zod": "^3.25.76 || ^4.1.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "ai": "^6.0.0",
+    "tsup": "^8.3.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0",
+    "zod": "^3.25.76"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  }
+}

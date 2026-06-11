@@ -1,0 +1,4 @@
+# Single-package repo. This file exists to approve the esbuild build script
+# (a tsup/vitest dependency) non-interactively under pnpm v11.
+allowBuilds:
+  esbuild: true
