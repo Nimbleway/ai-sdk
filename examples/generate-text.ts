@@ -23,7 +23,9 @@ async function main() {
   });
 
   for (const toolResult of steps.flatMap((step) => step.toolResults)) {
-    const out = toolResult.output as NimbleSearchOutput;
+    if (toolResult.toolName !== 'webSearch') continue;
+    const out = toolResult.output as NimbleSearchOutput | undefined;
+    if (!out?.results) continue;
     console.log(`\n[nimbleSearch] "${out.query}" → ${out.results.length} results`);
     for (const r of out.results) console.log(`  ${r.position ?? '·'}. ${r.title}\n     ${r.url}`);
   }
