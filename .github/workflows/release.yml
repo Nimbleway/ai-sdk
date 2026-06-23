@@ -5,11 +5,15 @@ name: release
 on:
   release:
     types: [published]
-  workflow_dispatch:
 
 permissions:
   contents: read
   id-token: write
+
+# Only one publish run per ref; never cancel an in-flight publish.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   publish:
@@ -35,7 +39,6 @@ jobs:
 
       # Guard against publishing a version that doesn't match the release tag.
       - name: Verify tag matches package.json version
-        if: github.event_name == 'release'
         env:
           REF_NAME: ${{ github.ref_name }}
         run: |
