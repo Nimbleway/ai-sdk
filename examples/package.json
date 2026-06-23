@@ -1,0 +1,22 @@
+{
+  "name": "@nimble-way/ai-sdk-examples",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Runnable examples for @nimble-way/ai-sdk.",
+  "scripts": {
+    "generate": "tsx generate-text.ts",
+    "stream": "tsx stream-text.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@ai-sdk/openai": "^3.0.0",
+    "@nimble-way/ai-sdk": "^0.1.0",
+    "ai": "^6.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  }
+}
