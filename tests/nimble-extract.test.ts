@@ -44,6 +44,18 @@ describe('nimbleExtract — execute() parameter mapping', () => {
     await run({ client }, { url: URL });
     expect(calls[0]!.country).toBeUndefined();
   });
+
+  it('requests both renderings (markdown preferred) plus links so the fallback is real', async () => {
+    const { client, calls } = mockNimbleExtractClient(extractResponse());
+    await run({ client }, { url: URL });
+    expect(calls[0]!.formats).toEqual(['markdown', 'html', 'links']);
+  });
+
+  it('requests html first when format is html', async () => {
+    const { client, calls } = mockNimbleExtractClient(extractResponse());
+    await run({ client, format: 'html' }, { url: URL });
+    expect(calls[0]!.formats).toEqual(['html', 'markdown', 'links']);
+  });
 });
 
 describe('nimbleExtract — execute() output', () => {

@@ -77,11 +77,14 @@ export function nimbleExtract(config: NimbleExtractToolConfig = {}) {
     execute: async (input): Promise<NimbleExtractOutput> => {
       const client = resolveClient(config);
 
-      // A rendering is only produced when requested via `formats`; pair the
-      // chosen content format with `links`.
+      // Request both renderings (preferred format first) plus links. A rendering
+      // is only produced when requested via `formats`, so asking for both lets an
+      // empty primary fall back to the other; normalizeExtractResponse reports
+      // whichever rendering actually populated the content.
       const params: NimbleExtractParams = {
         url: input.url,
-        formats: format === 'html' ? ['html', 'links'] : ['markdown', 'links'],
+        formats:
+          format === 'html' ? ['html', 'markdown', 'links'] : ['markdown', 'html', 'links'],
       };
       if (country) params.country = country;
       // `main_content` returns the cleaned article body rather than the full page.
