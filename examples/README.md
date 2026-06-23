@@ -5,15 +5,26 @@ They link the package in this repo (`link:..`), so they exercise the local sourc
 
 ## Setup
 
+The examples resolve `@nimble-way/ai-sdk` via `workspace:*`, so the package must
+be built once before they run. From the **repo root**:
+
 ```bash
-cp .env.example .env   # fill in NIMBLE_API_KEY + OPENAI_API_KEY
 pnpm install
+pnpm run build
+```
+
+Then configure keys in this directory:
+
+```bash
+cd examples
+cp .env.example .env   # fill in NIMBLE_API_KEY + OPENAI_API_KEY
 ```
 
 Then export the keys (or use `node --env-file=.env`):
 
 ```bash
-export NIMBLE_API_KEY=...   export OPENAI_API_KEY=...
+export NIMBLE_API_KEY=...
+export OPENAI_API_KEY=...
 ```
 
 ## Run
