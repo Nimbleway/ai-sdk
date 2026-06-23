@@ -83,13 +83,15 @@ The tool runs **in your app** (an app-side `tool()`, not a provider/server-execu
 Give the model a URL and get back clean content to read, quote, or summarize:
 
 ```ts
-import { generateText } from 'ai';
+import { generateText, stepCountIs } from 'ai';
 import { nimbleExtract } from '@nimble-way/ai-sdk';
 
 const { text } = await generateText({
   model: 'openai/gpt-4o-mini',
   prompt: 'Summarize https://en.wikipedia.org/wiki/Web_scraping',
   tools: { extract: nimbleExtract({ format: 'markdown' }) },
+  // Allow a step after the tool call so the model can summarize the page.
+  stopWhen: stepCountIs(2),
 });
 ```
 
