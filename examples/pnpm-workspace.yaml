@@ -1,3 +1,0 @@
-# Isolate this example from the parent package workspace.
-allowBuilds:
-  esbuild: true

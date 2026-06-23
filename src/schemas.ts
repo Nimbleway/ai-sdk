@@ -120,3 +120,79 @@ export interface NimbleSearchOutput {
   totalResults?: number;
   results: NimbleSearchResultItem[];
 }
+
+// ── Extract ────────────────────────────────────────────────────────────────
+
+/** Output format for extracted page content. */
+export type ExtractFormat = 'markdown' | 'html';
+
+/**
+ * The extract tool input the model fills in: just the URL to read. All policy
+ * (format, region, length cap) is fixed by the developer via the factory config.
+ */
+export const nimbleExtractInputSchema = z.object({
+  url: z.string().url().describe('The URL of the web page to extract clean content from.'),
+});
+
+export type NimbleExtractInput = z.infer<typeof nimbleExtractInputSchema>;
+
+/** Developer-facing factory config for the extract tool. */
+export interface NimbleExtractToolConfig {
+  /** Nimble API key. Defaults to `process.env.NIMBLE_API_KEY`. */
+  apiKey?: string;
+  /** Inject a pre-built / mock Nimble client (tests, advanced users). */
+  client?: NimbleExtractClient;
+  /** Content format. Default `markdown`. */
+  format?: ExtractFormat;
+  /** ISO country for geolocation / proxy selection. */
+  country?: string;
+  /** Truncate the extracted content to this many characters. Default 50_000. */
+  maxContentLength?: number;
+}
+
+/** Params this package sends to the SDK's `client.extract()`. */
+export interface NimbleExtractParams {
+  url: string;
+  country?: string;
+  /** Which renderings to request; `data.<format>` is populated per entry. */
+  formats?: Array<'html' | 'markdown' | 'links'>;
+  /** Refines Markdown extraction; `main_content` yields the cleaned article. */
+  markdown_backend?: 'full_page' | 'main_content';
+}
+
+/** Structural surface of the SDK extract response data this package consumes. */
+export interface NimbleRawExtractData {
+  /** Markdown rendering of the page (default). */
+  markdown?: string;
+  /** Raw HTML of the page. */
+  html?: string;
+  /** Unique URLs found on the page. */
+  links?: string[];
+}
+
+export interface NimbleRawExtractResponse {
+  url: string;
+  status: string;
+  status_code?: number;
+  task_id: string;
+  data: NimbleRawExtractData;
+  warnings?: string[];
+}
+
+export interface NimbleExtractClient {
+  extract(params: NimbleExtractParams): Promise<NimbleRawExtractResponse>;
+}
+
+/** The normalized extract output returned to the model. */
+export interface NimbleExtractOutput {
+  /** The final URL (after redirects). */
+  url: string;
+  /** Task status reported by Nimble (e.g. `success`). */
+  status: string;
+  statusCode?: number;
+  format: ExtractFormat;
+  /** The extracted page content in the requested format, truncated. */
+  content: string;
+  /** Unique links found on the page, when available. */
+  links?: string[];
+}

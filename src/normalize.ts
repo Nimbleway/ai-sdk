@@ -1,4 +1,7 @@
 import type {
+  ExtractFormat,
+  NimbleExtractOutput,
+  NimbleRawExtractResponse,
   NimbleRawSearchResponse,
   NimbleRawSearchResult,
   NimbleSearchOutput,
@@ -67,4 +70,37 @@ export function normalizeSearchResponse(
     totalResults: response.total_results,
     results,
   };
+}
+
+export interface NormalizeExtractOptions {
+  format: ExtractFormat;
+  maxContentLength: number;
+}
+
+/**
+ * Map a raw `/v1/extract` response into the package's normalized extract shape.
+ *
+ * - `content` is `data.markdown` (default) or `data.html`, falling back to the
+ *   other when the requested one is empty, truncated to `maxContentLength`.
+ * - `links` is surfaced when present; everything else (browser actions, network
+ *   captures, screenshots) is intentionally dropped.
+ */
+export function normalizeExtractResponse(
+  response: NimbleRawExtractResponse,
+  options: NormalizeExtractOptions,
+): NimbleExtractOutput {
+  const data = response.data;
+  const primary = options.format === 'html' ? data.html : data.markdown;
+  const fallback = options.format === 'html' ? data.markdown : data.html;
+  const content = truncate(primary || fallback || '', options.maxContentLength);
+
+  const out: NimbleExtractOutput = {
+    url: response.url,
+    status: response.status,
+    format: options.format,
+    content,
+  };
+  if (typeof response.status_code === 'number') out.statusCode = response.status_code;
+  if (data.links && data.links.length > 0) out.links = data.links;
+  return out;
 }
