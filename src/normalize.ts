@@ -82,6 +82,8 @@ export interface NormalizeExtractOptions {
  *
  * - `content` is `data.markdown` (default) or `data.html`, falling back to the
  *   other when the requested one is empty, truncated to `maxContentLength`.
+ * - `format` reflects the rendering actually returned, which may differ from
+ *   the requested format when the fallback is used.
  * - `links` is surfaced when present; everything else (browser actions, network
  *   captures, screenshots) is intentionally dropped.
  */
@@ -90,14 +92,25 @@ export function normalizeExtractResponse(
   options: NormalizeExtractOptions,
 ): NimbleExtractOutput {
   const data = response.data;
+  const otherFormat: ExtractFormat = options.format === 'html' ? 'markdown' : 'html';
   const primary = options.format === 'html' ? data.html : data.markdown;
   const fallback = options.format === 'html' ? data.markdown : data.html;
+
+  // Report the format that actually populated `content`. We request one
+  // rendering, but if the API returns it empty we fall back to the other — and
+  // the model must be told which format it received, not the one we asked for.
+  const usedFormat: ExtractFormat =
+    primary && primary.length > 0
+      ? options.format
+      : fallback && fallback.length > 0
+        ? otherFormat
+        : options.format;
   const content = truncate(primary || fallback || '', options.maxContentLength);
 
   const out: NimbleExtractOutput = {
     url: response.url,
     status: response.status,
-    format: options.format,
+    format: usedFormat,
     content,
   };
   if (typeof response.status_code === 'number') out.statusCode = response.status_code;

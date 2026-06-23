@@ -65,12 +65,13 @@ describe('nimbleExtract — execute() output', () => {
     expect(out.content).toContain('<h1>Example Article</h1>');
   });
 
-  it('falls back to the other format when the requested one is empty', async () => {
+  it('falls back to the other format when the requested one is empty, and reports the format used', async () => {
     const { client } = mockNimbleExtractClient(
       extractResponse({ data: { markdown: '', html: '<p>only html</p>' } }),
     );
     const out = await run({ client, format: 'markdown' }, { url: URL });
     expect(out.content).toBe('<p>only html</p>');
+    expect(out.format).toBe('html');
   });
 
   it('truncates content to maxContentLength', async () => {
