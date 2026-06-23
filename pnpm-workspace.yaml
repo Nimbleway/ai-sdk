@@ -3,6 +3,6 @@
 packages:
   - examples
 
-# Approve the esbuild build script (a tsup/vitest dependency) under pnpm v11.
+# Approve the esbuild build script (a tsup/vitest dependency) under pnpm v10.
 allowBuilds:
   esbuild: true
