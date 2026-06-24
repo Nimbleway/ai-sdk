@@ -1,6 +1,6 @@
 {
   "name": "@nimble-way/ai-sdk",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Nimble Web Search and Extract as ready-made tools for the Vercel AI SDK.",
   "type": "module",
   "license": "Apache-2.0",
