@@ -1,4 +1,7 @@
 import type {
+  NimbleExtractClient,
+  NimbleExtractParams,
+  NimbleRawExtractResponse,
   NimbleRawSearchResponse,
   NimbleRawSearchResult,
   NimbleSearchClient,
@@ -49,6 +52,38 @@ export function mockNimbleClient(response: NimbleRawSearchResponse): {
   const calls: NimbleSearchParams[] = [];
   const client: NimbleSearchClient = {
     search: async (params: NimbleSearchParams) => {
+      calls.push(params);
+      return response;
+    },
+  };
+  return { client, calls };
+}
+
+export function extractResponse(
+  over: Partial<NimbleRawExtractResponse> = {},
+): NimbleRawExtractResponse {
+  return {
+    url: 'https://example.com/article',
+    status: 'success',
+    status_code: 200,
+    task_id: 'task-test-0001',
+    data: {
+      markdown: '# Example Article\n\nClean readable body text.',
+      html: '<h1>Example Article</h1><p>Clean readable body text.</p>',
+      links: ['https://example.com/a', 'https://example.com/b'],
+    },
+    ...over,
+  };
+}
+
+/** A spyable mock Nimble extract client. */
+export function mockNimbleExtractClient(response: NimbleRawExtractResponse): {
+  client: NimbleExtractClient;
+  calls: NimbleExtractParams[];
+} {
+  const calls: NimbleExtractParams[] = [];
+  const client: NimbleExtractClient = {
+    extract: async (params: NimbleExtractParams) => {
       calls.push(params);
       return response;
     },

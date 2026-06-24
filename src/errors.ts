@@ -25,3 +25,17 @@ export class NimbleSearchError extends Error {
     this.status = options?.status;
   }
 }
+
+/**
+ * Wraps an error surfaced by the Nimble client / API during an extract call,
+ * preserving the HTTP status when available.
+ */
+export class NimbleExtractError extends Error {
+  readonly status?: number;
+
+  constructor(message: string, options?: { status?: number; cause?: unknown }) {
+    super(message, options?.cause !== undefined ? { cause: options.cause } : undefined);
+    this.name = 'NimbleExtractError';
+    this.status = options?.status;
+  }
+}

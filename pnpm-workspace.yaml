@@ -1,4 +1,8 @@
-# Single-package repo. This file exists to approve the esbuild build script
-# (a tsup/vitest dependency) non-interactively under pnpm v11.
+# The package plus its examples (examples link the package via workspace:* so
+# `ai`/`zod` dedupe to a single instance). Only the package is published.
+packages:
+  - examples
+
+# Approve the esbuild build script (a tsup/vitest dependency) under pnpm v10.
 allowBuilds:
   esbuild: true

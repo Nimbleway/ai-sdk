@@ -11,6 +11,10 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # Exercise the engines.node floor (>=18) plus current LTS releases.
+        node-version: [18, 20, 22]
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
@@ -20,7 +24,7 @@ jobs:
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: 20
+          node-version: ${{ matrix.node-version }}
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile
@@ -43,10 +47,12 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 20
+          cache: pnpm
 
-      # Typecheck the examples against the published package (isolated workspace).
+      # Workspace install covers examples; build so the linked package resolves.
       - run: pnpm install --frozen-lockfile
-        working-directory: examples
+      - run: pnpm run build
 
+      # Typecheck the examples against the local package.
       - run: pnpm run typecheck
         working-directory: examples

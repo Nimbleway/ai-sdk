@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { normalizeSearchResponse } from '../src/normalize';
-import { serpResult, wsaResult, searchResponse } from './fixtures';
+import { normalizeSearchResponse, normalizeExtractResponse } from '../src/normalize';
+import { serpResult, wsaResult, searchResponse, extractResponse } from './fixtures';
 
 describe('normalizeSearchResponse', () => {
   it('maps the basic fields and SERP metadata', () => {
@@ -68,5 +68,36 @@ describe('normalizeSearchResponse', () => {
     const out = normalizeSearchResponse(searchResponse([]), { query: 'q', maxContentLength: 100 });
     expect(out.results).toEqual([]);
     expect(out.totalResults).toBe(0);
+  });
+});
+
+describe('normalizeExtractResponse', () => {
+  it('reports the requested format when it is populated', () => {
+    const out = normalizeExtractResponse(extractResponse(), {
+      format: 'markdown',
+      maxContentLength: 10_000,
+    });
+    expect(out.format).toBe('markdown');
+    expect(out.content).toContain('# Example Article');
+    expect(out.links).toEqual(['https://example.com/a', 'https://example.com/b']);
+  });
+
+  it('reports the fallback format when the requested rendering is empty', () => {
+    const out = normalizeExtractResponse(
+      extractResponse({ data: { markdown: '', html: '<p>only html</p>' } }),
+      { format: 'markdown', maxContentLength: 10_000 },
+    );
+    expect(out.content).toBe('<p>only html</p>');
+    expect(out.format).toBe('html');
+  });
+
+  it('returns empty content without throwing on a non-success status', () => {
+    const out = normalizeExtractResponse(
+      extractResponse({ status: 'error', status_code: 404, data: { markdown: '', html: '' } }),
+      { format: 'markdown', maxContentLength: 10_000 },
+    );
+    expect(out.status).toBe('error');
+    expect(out.statusCode).toBe(404);
+    expect(out.content).toBe('');
   });
 });
