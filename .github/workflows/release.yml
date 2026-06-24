@@ -40,7 +40,7 @@ jobs:
       # Guard against publishing a version that doesn't match the release tag.
       - name: Verify tag matches package.json version
         env:
-          REF_NAME: ${{ github.ref_name }}
+          REF_NAME: ${{ github.event.release.tag_name }}
         run: |
           PKG="$(node -p "require('./package.json').version")"
           TAG="${REF_NAME#v}"
