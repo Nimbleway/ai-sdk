@@ -1,7 +1,12 @@
+import { inspect } from 'node:util';
 import { describe, it, expect } from 'vitest';
 import { nimbleSearch } from '../src/nimble-search';
 import { nimbleExtract } from '../src/nimble-extract';
-import { nimbleAgentRunResult, nimbleAgentStartRun } from '../src/nimble-agent';
+import {
+  nimbleAgentRunResult,
+  nimbleAgentRunStatus,
+  nimbleAgentStartRun,
+} from '../src/nimble-agent';
 import { NIMBLE_CLIENT_SOURCE, createNimbleClient } from '../src/client';
 import { AGENT_ID, RUN_ID, completedRun, completedTextResult, rawRun } from './agent-fixtures';
 
@@ -138,6 +143,25 @@ describe('X-Client-Source attribution (real client, stubbed network)', () => {
 
     expect(err).toBeInstanceOf(Error);
     expect(String(err)).not.toContain(KEY);
-    expect(JSON.stringify(err, Object.getOwnPropertyNames(err as object))).not.toContain(KEY);
+    // Deep inspection covers nested properties and the whole cause chain.
+    expect(inspect(err, { depth: 8 })).not.toContain(KEY);
+  });
+
+  it('percent-encodes a hostile model-chosen runId into one opaque path segment', async () => {
+    // The traversal guarantee lives in the SDK's path encoder; this pins it in
+    // OUR suite so a future SDK/transport swap can't silently reopen it.
+    const { seen, fetch } = captureFetch([{ json: rawRun() }]);
+    const t = nimbleAgentRunStatus({
+      apiKey: KEY,
+      agentId: AGENT_ID,
+      clientOptions: { fetch, maxRetries: 0 },
+    });
+    await t.execute!({ runId: 'x/../../v2/agents/OTHER/runs/y' }, execOpts);
+
+    const pathname = new URL(seen[0]!.url).pathname;
+    expect(pathname).toContain(`/v2/agents/${AGENT_ID}/runs/`);
+    const runSegment = pathname.split('/runs/')[1]!;
+    expect(runSegment).not.toContain('/'); // no raw separators escaped encoding
+    expect(runSegment).toContain('%2F');
   });
 });

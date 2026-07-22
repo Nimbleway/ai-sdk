@@ -155,7 +155,7 @@ export interface NimbleExtractToolConfig {
   maxContentLength?: number;
 }
 
-/** Params this package sends to the SDK's `client.extract()`. */
+/** Params this package sends to the SDK's `client.extract.run()`. */
 export interface NimbleExtractParams {
   url: string;
   country?: string;

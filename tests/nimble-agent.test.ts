@@ -1,3 +1,4 @@
+import { inspect } from 'node:util';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import {
   nimbleAgentStartRun,
@@ -418,6 +419,38 @@ describe('nimbleAgentRunResult — no wait (default)', () => {
       { reason: 'protocol', runId: RUN_ID },
     );
   });
+
+  it('maps out-of-contract result containers to protocol errors (never raw TypeErrors)', async () => {
+    const cases = [
+      { run: completedRun(), output: null }, // null output container
+      {}, // no output, no run
+      { output: { type: 'text', content: 'x', trust: textTrust() } }, // success form without run
+    ];
+    for (const body of cases) {
+      const { client } = scriptedRunsClient({
+        gets: [completedRun()],
+        result: body as never,
+      });
+      await expect(
+        runResult({ client, agentId: AGENT_ID }, { runId: RUN_ID }),
+      ).rejects.toMatchObject({ name: 'NimbleAgentRunError', reason: 'protocol', runId: RUN_ID });
+    }
+
+    // Body decoded to null (needs a literal client — the scripted mock's
+    // `??` default would swallow a null script entry).
+    const nullResultClient = {
+      agents: {
+        runs: {
+          create: async () => rawRun(),
+          get: async () => completedRun(),
+          result: async () => null as never,
+        },
+      },
+    };
+    await expect(
+      runResult({ client: nullResultClient, agentId: AGENT_ID }, { runId: RUN_ID }),
+    ).rejects.toMatchObject({ name: 'NimbleAgentRunError', reason: 'protocol', runId: RUN_ID });
+  });
 });
 
 describe('nimbleAgentRunResult — state-independent resumability', () => {
@@ -539,6 +572,8 @@ describe('agent tools — secret hygiene (mocked layer)', () => {
       runId: RUN_ID,
     }).catch((e: unknown) => e);
     expect(String(err)).not.toContain(KEY);
-    expect(JSON.stringify(err, Object.getOwnPropertyNames(err as object))).not.toContain(KEY);
+    // Deep inspection covers nested properties and the whole cause chain, not
+    // just the top-level error's own property names.
+    expect(inspect(err, { depth: 8 })).not.toContain(KEY);
   });
 });

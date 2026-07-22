@@ -199,10 +199,23 @@ function toPendingOutput(
   };
 }
 
+function protocolError(ids: { runId: string; agentId: string }, runStatus?: string) {
+  return new NimbleAgentRunError(
+    `Nimble agent run ${ids.runId} returned a malformed result payload.`,
+    { reason: 'protocol', runId: ids.runId, agentId: ids.agentId, runStatus },
+  );
+}
+
 function toAgentOutput(
   raw: NimbleAgentRawResult['output'],
   ids: { runId: string; agentId: string },
 ): NimbleAgentOutput {
+  // The SDK does not runtime-validate bodies; a misbehaving proxy can deliver
+  // an out-of-contract container. Keep such cases inside the typed
+  // protocol-error contract instead of surfacing a raw TypeError.
+  if (typeof raw !== 'object' || raw === null) {
+    throw protocolError(ids, 'completed');
+  }
   const kind = raw.type ?? (typeof raw.content === 'string' ? 'text' : 'json');
   if (kind === 'text' && typeof raw.content === 'string') {
     return { type: 'text', text: raw.content, trust: raw.trust };
@@ -210,10 +223,7 @@ function toAgentOutput(
   if (kind === 'json' && typeof raw.content === 'object' && raw.content !== null) {
     return { type: 'json', json: raw.content, trust: raw.trust };
   }
-  throw new NimbleAgentRunError(
-    `Nimble agent run ${ids.runId} returned a malformed result payload.`,
-    { reason: 'protocol', runId: ids.runId, agentId: ids.agentId, runStatus: 'completed' },
-  );
+  throw protocolError(ids, 'completed');
 }
 
 function toCompletedOutput(
@@ -444,9 +454,16 @@ export function nimbleAgentRunResult(config: NimbleAgentRunResultConfig = {}) {
         throw toAgentError(err, { verb: 'result fetch', ...ids });
       }
 
+      if (typeof result !== 'object' || result === null) {
+        throw protocolError(ids);
+      }
       if (!('output' in result)) {
+        // Failed form: { run, error }. Validate the run before dereferencing
+        // so a run-less body maps to 'protocol', not a TypeError.
+        if (typeof result.run?.status !== 'string') throw protocolError(ids);
         throw terminalFailure(result.run, ids, result.error?.message);
       }
+      if (typeof result.run?.status !== 'string') throw protocolError(ids);
       return toCompletedOutput(result, agentId);
     },
   });
