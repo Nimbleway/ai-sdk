@@ -312,7 +312,7 @@ The **model-facing inputs** are `{ task: string, effort?: … }` (start) and `{ 
 
 - **Search + Extract + Agent runs.** Map / Crawl are follow-ups.
 - **No answer generation in Search.** `include_answer` is intentionally not exposed.
-- **`searchDepth: 'fast'` is not available** (enterprise-gated).
+- **`searchDepth: 'fast'` is not available** in this package.
 - **Agent runs need a pre-created agent instance** (`NIMBLE_AGENT_ID`); agent creation/management is deliberately not a model-callable tool. Run event streaming (SSE) is not exposed yet.
 - **Runtime:** targets the **Node.js runtime** (Node ≥ 18). Edge/serverless is expected to work but not yet verified — prefer the Node runtime.
 
