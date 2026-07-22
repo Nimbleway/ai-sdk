@@ -6,3 +6,6 @@ packages:
 # Approve the esbuild build script (a tsup/vitest dependency) under pnpm v10.
 allowBuilds:
   esbuild: true
+
+minimumReleaseAgeExclude:
+  - '@nimble-way/nimble-js@1.1.0'

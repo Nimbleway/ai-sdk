@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import type { NimbleClientOptions } from './client';
 
 /**
  * The tool input the model fills in. Kept deliberately small: the model only
@@ -34,6 +35,8 @@ export interface NimbleSearchToolConfig {
   apiKey?: string;
   /** Inject a pre-built / mock Nimble client (tests, advanced users). */
   client?: NimbleSearchClient;
+  /** Options forwarded to the package-constructed Nimble client. */
+  clientOptions?: NimbleClientOptions;
   /** Default number of results when the model doesn't specify. Default 5. */
   maxResults?: number;
   /** Hard upper bound on results, regardless of model request. Default 10. */
@@ -142,6 +145,8 @@ export interface NimbleExtractToolConfig {
   apiKey?: string;
   /** Inject a pre-built / mock Nimble client (tests, advanced users). */
   client?: NimbleExtractClient;
+  /** Options forwarded to the package-constructed Nimble client. */
+  clientOptions?: NimbleClientOptions;
   /** Content format. Default `markdown`. */
   format?: ExtractFormat;
   /** ISO country for geolocation / proxy selection. */
@@ -179,8 +184,15 @@ export interface NimbleRawExtractResponse {
   warnings?: string[];
 }
 
+/**
+ * Structural surface of the SDK's extract resource this package calls. Since
+ * `@nimble-way/nimble-js` 1.x, extract is a resource — `client.extract.run()`
+ * — rather than the 0.x callable `client.extract()`.
+ */
 export interface NimbleExtractClient {
-  extract(params: NimbleExtractParams): Promise<NimbleRawExtractResponse>;
+  extract: {
+    run(params: NimbleExtractParams): Promise<NimbleRawExtractResponse>;
+  };
 }
 
 /** The normalized extract output returned to the model. */

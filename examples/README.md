@@ -33,11 +33,16 @@ export OPENAI_API_KEY=...
 pnpm generate "What did Nimble announce about agentic web search?"      # search → answer
 pnpm stream   "What are the latest developments in AI web search?"       # search, streamed
 pnpm extract  "https://en.wikipedia.org/wiki/Web_scraping"               # extract → summary
+pnpm agent    "How is the EU AI Act enforcement timeline changing?"      # deep research (async)
 ```
 
 - [`generate-text.ts`](generate-text.ts) — `generateText` + `nimbleSearch()`; prints the tool's
   ranked results, then the model's cited answer.
 - [`stream-text.ts`](stream-text.ts) — `streamText` variant; streams the answer to stdout.
 - [`extract.ts`](extract.ts) — `generateText` + `nimbleExtract()`; reads a URL and summarizes it.
+- [`agent-research.ts`](agent-research.ts) — the async deep-research flow: request 1 starts an
+  agent run and returns in milliseconds; request 2 (even a separate process — try
+  `pnpm agent --start-only "…"` then `pnpm agent --resume task_run_…`) fetches the cited
+  result. Needs `NIMBLE_AGENT_ID` (a research agent takes minutes at `medium` effort).
 
 All use OpenAI `gpt-4o-mini` by default (override with `OPENAI_MODEL`); any AI SDK model works.

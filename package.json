@@ -1,7 +1,7 @@
 {
   "name": "@nimble-way/ai-sdk",
-  "version": "0.2.1",
-  "description": "Nimble Web Search and Extract as ready-made tools for the Vercel AI SDK.",
+  "version": "0.3.0",
+  "description": "Nimble Web Search, Extract, and deep-research Agent runs as ready-made tools for the Vercel AI SDK.",
   "type": "module",
   "license": "Apache-2.0",
   "author": "Nimble",
@@ -21,6 +21,7 @@
     "web-search",
     "search",
     "extract",
+    "deep-research",
     "tool",
     "llm",
     "agent"
@@ -50,7 +51,7 @@
     "prepublishOnly": "pnpm run build"
   },
   "dependencies": {
-    "@nimble-way/nimble-js": "^0.14.0"
+    "@nimble-way/nimble-js": "^1.1.0"
   },
   "peerDependencies": {
     "ai": "^6",

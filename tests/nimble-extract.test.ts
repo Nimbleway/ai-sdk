@@ -105,8 +105,10 @@ describe('nimbleExtract — execute() output', () => {
 describe('nimbleExtract — errors', () => {
   it('wraps a client/API failure in NimbleExtractError with the status', async () => {
     const failing = {
-      extract: async () => {
-        throw Object.assign(new Error('forbidden'), { status: 403 });
+      extract: {
+        run: async () => {
+          throw Object.assign(new Error('forbidden'), { status: 403 });
+        },
       },
     };
     await expect(run({ client: failing }, { url: URL })).rejects.toMatchObject({

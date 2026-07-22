@@ -1,5 +1,5 @@
 import { tool } from 'ai';
-import { Nimble } from '@nimble-way/nimble-js';
+import { createNimbleClient } from './client';
 import { nimbleExtractInputSchema } from './schemas';
 import type {
   ExtractFormat,
@@ -42,7 +42,7 @@ function resolveClient(config: NimbleExtractToolConfig): NimbleExtractClient {
       'Missing Nimble API key: set NIMBLE_API_KEY or pass { apiKey } to nimbleExtract().',
     );
   }
-  return new Nimble({ apiKey }) as unknown as NimbleExtractClient;
+  return createNimbleClient(apiKey, config.clientOptions) as unknown as NimbleExtractClient;
 }
 
 /**
@@ -92,7 +92,8 @@ export function nimbleExtract(config: NimbleExtractToolConfig = {}) {
 
       let raw;
       try {
-        raw = await client.extract(params);
+        // nimble-js 1.x exposes extract as a resource: client.extract.run().
+        raw = await client.extract.run(params);
       } catch (err) {
         throw toExtractError(err);
       }
