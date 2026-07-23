@@ -425,6 +425,7 @@ describe('nimbleAgentRunResult — no wait (default)', () => {
       { run: completedRun(), output: null }, // null output container
       {}, // no output, no run
       { output: { type: 'text', content: 'x', trust: textTrust() } }, // success form without run
+      { run: completedRun(), output: { type: 'text', content: 'x' } }, // output missing trust
     ];
     for (const body of cases) {
       const { client } = scriptedRunsClient({
@@ -507,6 +508,24 @@ describe('nimbleAgentRunResult — bounded wait', () => {
     expect(out.status).toBe('running');
     expect(elapsed).toBeGreaterThanOrEqual(200);
     expect(elapsed).toBeLessThan(2_000);
+    expect(calls.result).toHaveLength(0);
+  });
+
+  it('surfaces a transient failure mid-poll as a typed error (no hang, no swallow)', async () => {
+    const { client, calls } = scriptedRunsClient({
+      gets: [rawRun({ status: 'running' }), httpError(500, 'transient upstream error')],
+    });
+    await expect(
+      runResult(
+        { client, agentId: AGENT_ID, wait: { timeoutMs: 5_000, pollIntervalMs: 100 } },
+        { runId: RUN_ID },
+      ),
+    ).rejects.toMatchObject({
+      name: 'NimbleAgentRunError',
+      reason: 'request',
+      status: 500,
+      runId: RUN_ID,
+    });
     expect(calls.result).toHaveLength(0);
   });
 

@@ -22,6 +22,7 @@ export {
   nimbleAgentStartRunInputSchema,
   nimbleAgentRunIdInputSchema,
   NIMBLE_AGENT_EFFORTS,
+  NIMBLE_AGENT_RUN_STATUSES,
 } from './agent-schemas';
 export { NIMBLE_CLIENT_SOURCE, createNimbleClient } from './client';
 

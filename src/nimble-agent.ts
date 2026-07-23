@@ -1,6 +1,10 @@
 import { tool } from 'ai';
 import { createNimbleClient } from './client';
-import { nimbleAgentRunIdInputSchema, nimbleAgentStartRunInputSchema } from './agent-schemas';
+import {
+  NIMBLE_AGENT_RUN_STATUSES,
+  nimbleAgentRunIdInputSchema,
+  nimbleAgentStartRunInputSchema,
+} from './agent-schemas';
 import type {
   NimbleAgentEffort,
   NimbleAgentOutput,
@@ -43,13 +47,11 @@ const EFFORT_ORDER: Record<NimbleAgentEffort, number> = {
   max: 4,
 };
 
-const LIFECYCLE_STATUSES: ReadonlySet<string> = new Set([
-  'queued',
-  'running',
-  'completed',
-  'failed',
-  'cancelled',
-]);
+// Derived from the canonical const array so a drift between the type and the
+// runtime guard cannot compile.
+const LIFECYCLE_STATUSES: ReadonlySet<NimbleAgentRunLifecycleStatus> = new Set(
+  NIMBLE_AGENT_RUN_STATUSES,
+);
 
 function capEffort(requested: NimbleAgentEffort, cap: NimbleAgentEffort): NimbleAgentEffort {
   return EFFORT_ORDER[requested] > EFFORT_ORDER[cap] ? cap : requested;
@@ -160,6 +162,8 @@ function assertKnownStatus(
 function baseFields(run: NimbleAgentRawRun, agentId: string) {
   return {
     runId: run.id,
+    // Deliberately truthy (not `??`): an out-of-contract empty string from the
+    // server should also fall back to the configured agent id.
     agentId: run.web_search_agent_id || agentId,
     effort: run.effort,
     createdAt: run.created_at,
@@ -214,6 +218,11 @@ function toAgentOutput(
   // an out-of-contract container. Keep such cases inside the typed
   // protocol-error contract instead of surfacing a raw TypeError.
   if (typeof raw !== 'object' || raw === null) {
+    throw protocolError(ids, 'completed');
+  }
+  // `trust` is required on both output forms; a body missing it would make the
+  // typed output lie (non-null field holding undefined).
+  if (typeof raw.trust !== 'object' || raw.trust === null) {
     throw protocolError(ids, 'completed');
   }
   const kind = raw.type ?? (typeof raw.content === 'string' ? 'text' : 'json');

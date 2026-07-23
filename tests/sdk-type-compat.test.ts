@@ -13,6 +13,9 @@ import type {
   NimbleAgentRunCreateBody,
   NimbleAgentRunsClient,
 } from '../src/agent-schemas';
+import type { ExtractRunResponse } from '@nimble-way/nimble-js/resources/extract/extract';
+import type { SearchResponse } from '@nimble-way/nimble-js/resources/top-level';
+import type { NimbleRawExtractResponse, NimbleRawSearchResponse } from '../src/schemas';
 import { rawRun } from './agent-fixtures';
 
 /**
@@ -31,6 +34,8 @@ function compileTimeContract(
   sdkResultResponse: RunResultResponse,
   packageBody: Required<NimbleAgentRunCreateBody>,
   realClient: Nimble,
+  sdkSearchResponse: SearchResponse,
+  sdkExtractResponse: ExtractRunResponse,
 ) {
   // Responses the package READS: SDK generated → structural must be assignable.
   const readCreate: NimbleAgentRawRun = sdkCreateResponse;
@@ -44,7 +49,15 @@ function compileTimeContract(
   // (this is the exact assumption behind resolveAgentContext's cast).
   const clientSurface: NimbleAgentRunsClient = realClient;
 
-  return { readCreate, readGet, readResult, sendBody, clientSurface };
+  // Drift guard for the pre-existing Search/Extract surfaces — RESPONSE
+  // direction only. Full client assignability deliberately cannot hold there:
+  // the package's param types are looser than the SDK's country/locale literal
+  // unions by design (arbitrary strings, server-validated), which is exactly
+  // what the resolveClient casts bridge.
+  const readSearch: NimbleRawSearchResponse = sdkSearchResponse;
+  const readExtract: NimbleRawExtractResponse = sdkExtractResponse;
+
+  return { readCreate, readGet, readResult, sendBody, clientSurface, readSearch, readExtract };
 }
 
 // Fixtures used across the test suite conform to the SDK generated types, so

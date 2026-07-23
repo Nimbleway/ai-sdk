@@ -53,10 +53,11 @@ export type NimbleAgentRunErrorReason =
 
 /**
  * Thrown by the agent tools when a run cannot produce a result. Always retains
- * the run/agent IDs (when known) — in the fields *and* in the message — so a
- * model or caller seeing the error can still resume, inspect, or report the
- * run. A wait that merely times out does NOT throw this; the result tool
- * returns `{ ready: false }` because a still-active run is not a failure.
+ * the runId (when known) in the fields *and* in the message — so a model or
+ * caller seeing the error can still resume, inspect, or report the run — and
+ * the agentId in the fields. A wait that merely times out does NOT throw this;
+ * the result tool returns `{ ready: false }` because a still-active run is not
+ * a failure.
  */
 export class NimbleAgentRunError extends Error {
   /** The run this error belongs to, when known. */

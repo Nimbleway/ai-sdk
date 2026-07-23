@@ -52,12 +52,15 @@ export type NimbleAgentRunIdInput = z.infer<typeof nimbleAgentRunIdInputSchema>;
 // ── Developer-facing factory configs ───────────────────────────────────────
 
 /** Run lifecycle states. `queued` and `running` are the non-terminal pair. */
-export type NimbleAgentRunLifecycleStatus =
-  | 'queued'
-  | 'running'
-  | 'completed'
-  | 'failed'
-  | 'cancelled';
+export const NIMBLE_AGENT_RUN_STATUSES = [
+  'queued',
+  'running',
+  'completed',
+  'failed',
+  'cancelled',
+] as const;
+
+export type NimbleAgentRunLifecycleStatus = (typeof NIMBLE_AGENT_RUN_STATUSES)[number];
 
 /** Config shared by all three agent tool factories. */
 export interface NimbleAgentToolConfig {
