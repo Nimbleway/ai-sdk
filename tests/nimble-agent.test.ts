@@ -456,6 +456,39 @@ describe('nimbleAgentRunResult — no wait (default)', () => {
     );
   });
 
+  it('re-validates the result payload run: an embedded running status maps to pending, not completed', async () => {
+    // Status GET said completed (so we fetch /result), but the result payload's
+    // own run says running — trust the payload, do not stamp completed.
+    const inconsistent = completedTextResult();
+    inconsistent.run = rawRun({ status: 'running', is_active: true });
+    const { client } = scriptedRunsClient({ gets: [completedRun()], result: inconsistent });
+    const out = await runResult({ client, agentId: AGENT_ID }, { runId: RUN_ID });
+    expect(out.ready).toBe(false);
+    expect(out.status).toBe('running');
+  });
+
+  it('re-validates the result payload run: an embedded failed status throws terminal, not completed', async () => {
+    const inconsistent = completedTextResult();
+    inconsistent.run = rawRun({
+      status: 'failed',
+      is_active: false,
+      error: { message: 'result-embedded failure', ref_id: RUN_ID },
+    });
+    const { client } = scriptedRunsClient({ gets: [completedRun()], result: inconsistent });
+    await expect(runResult({ client, agentId: AGENT_ID }, { runId: RUN_ID })).rejects.toMatchObject(
+      { name: 'NimbleAgentRunError', reason: 'failed', runId: RUN_ID },
+    );
+  });
+
+  it('re-validates the result payload run: an unknown embedded status is a protocol error', async () => {
+    const inconsistent = completedTextResult();
+    inconsistent.run = rawRun({ status: 'exploded' as never });
+    const { client } = scriptedRunsClient({ gets: [completedRun()], result: inconsistent });
+    await expect(runResult({ client, agentId: AGENT_ID }, { runId: RUN_ID })).rejects.toMatchObject(
+      { reason: 'protocol', runId: RUN_ID },
+    );
+  });
+
   it('throws a protocol error on a malformed output payload', async () => {
     const malformed = completedTextResult();
     (malformed.output as { content: unknown }).content = 42;
@@ -572,6 +605,38 @@ describe('nimbleAgentRunResult — bounded wait', () => {
       runId: RUN_ID,
     });
     expect(calls.result).toHaveLength(0);
+  });
+
+  it('coerces a NaN poll interval to a bounded value (no 0ms spin)', async () => {
+    // NaN is a common Number(unset-env) result; `??` would treat it as provided.
+    const { client, calls } = scriptedRunsClient({ gets: [rawRun({ status: 'running' })] });
+    const startedAt = performance.now();
+    const out = await runResult(
+      { client, agentId: AGENT_ID, wait: { timeoutMs: 400, pollIntervalMs: NaN } },
+      { runId: RUN_ID },
+    );
+    const elapsed = performance.now() - startedAt;
+
+    expect(out.ready).toBe(false);
+    // With the bug, sleep(NaN)→0ms would fire hundreds of polls inside 400ms.
+    expect(calls.get.length).toBeLessThan(6);
+    expect(elapsed).toBeGreaterThanOrEqual(250);
+    expect(elapsed).toBeLessThan(3_000);
+  });
+
+  it('coerces a NaN timeout to the finite default (loop still terminates)', async () => {
+    const { client } = scriptedRunsClient({
+      gets: [rawRun({ status: 'running' }), completedRun()],
+      result: completedTextResult(),
+    });
+    const startedAt = performance.now();
+    const out = await runResult(
+      { client, agentId: AGENT_ID, wait: { timeoutMs: NaN, pollIntervalMs: 50 } },
+      { runId: RUN_ID },
+    );
+    // A NaN timeout must not wedge the loop; it completes on the next poll.
+    expect(out.ready).toBe(true);
+    expect(performance.now() - startedAt).toBeLessThan(2_000);
   });
 
   it('clamps tiny poll intervals (never hammers the API)', async () => {

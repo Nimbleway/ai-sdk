@@ -284,15 +284,25 @@ function abortReason(signal: AbortSignal | undefined): unknown {
   return signal?.reason ?? new Error('The operation was aborted.');
 }
 
+/**
+ * A finite, positive number, or the fallback. Guards against non-finite /
+ * non-positive wait values (notably `NaN` from `Number(unset env)`) — which
+ * `??` would treat as "provided", leaving a `NaN` timeout that never trips the
+ * `remaining <= 0` break and a `NaN` sleep that coerces to a 0ms tight poll.
+ */
+function positiveFinite(value: number | undefined, fallback: number): number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
 function normalizeWait(
   wait: NimbleAgentRunResultConfig['wait'],
 ): Required<NimbleAgentWaitOptions> | undefined {
   if (!wait) return undefined;
   const options = wait === true ? {} : wait;
   return {
-    timeoutMs: options.timeoutMs ?? NIMBLE_AGENT_DEFAULTS.waitTimeoutMs,
+    timeoutMs: positiveFinite(options.timeoutMs, NIMBLE_AGENT_DEFAULTS.waitTimeoutMs),
     pollIntervalMs: Math.max(
-      options.pollIntervalMs ?? NIMBLE_AGENT_DEFAULTS.pollIntervalMs,
+      positiveFinite(options.pollIntervalMs, NIMBLE_AGENT_DEFAULTS.pollIntervalMs),
       NIMBLE_AGENT_DEFAULTS.minPollIntervalMs,
     ),
   };
@@ -483,7 +493,18 @@ export function nimbleAgentRunResult(config: NimbleAgentRunResultConfig = {}) {
         if (typeof result.run?.status !== 'string') throw protocolError(ids);
         throw terminalFailure(result.run, ids, result.error?.message);
       }
-      if (typeof result.run?.status !== 'string') throw protocolError(ids);
+      // Re-validate the run object embedded in the result payload rather than
+      // trusting only the earlier status snapshot: an eventually-inconsistent
+      // or malformed body must not be stamped `completed` by toCompletedOutput.
+      const resultRun = result.run;
+      if (typeof resultRun?.status !== 'string') throw protocolError(ids);
+      assertKnownStatus(resultRun, ids);
+      if (resultRun.status === 'queued' || resultRun.status === 'running') {
+        return toPendingOutput(resultRun, agentId, resultRun.status);
+      }
+      if (resultRun.status === 'failed' || resultRun.status === 'cancelled') {
+        throw terminalFailure(resultRun, ids);
+      }
       return toCompletedOutput(result, agentId);
     },
   });
