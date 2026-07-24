@@ -65,12 +65,9 @@ function readStatus(err: unknown): number | undefined {
   return undefined;
 }
 
-/** Parsed error body of a Stainless APIError, when it looks like a failed result. */
-function readFailedResultBody(err: unknown): NimbleAgentRawFailedResult | undefined {
-  if (typeof err !== 'object' || err === null || !('error' in err)) return undefined;
-  const body = (err as { error?: unknown }).error;
-  if (typeof body !== 'object' || body === null) return undefined;
-  const candidate = body as Partial<NimbleAgentRawFailedResult>;
+function asFailedResult(value: unknown): NimbleAgentRawFailedResult | undefined {
+  if (typeof value !== 'object' || value === null) return undefined;
+  const candidate = value as Partial<NimbleAgentRawFailedResult>;
   if (
     typeof candidate.run?.status === 'string' &&
     typeof candidate.error?.message === 'string'
@@ -78,6 +75,20 @@ function readFailedResultBody(err: unknown): NimbleAgentRawFailedResult | undefi
     return candidate as NimbleAgentRawFailedResult;
   }
   return undefined;
+}
+
+/**
+ * Parsed error body of a Stainless APIError, when it carries a failed result.
+ * The API delivers the 422 failure form either bare (`{ run, error }`) or
+ * wrapped in the gateway's error envelope (`{ detail: { run, error } }`) —
+ * accept both so terminal failed/cancelled mapping and the server message
+ * survive either shape.
+ */
+function readFailedResultBody(err: unknown): NimbleAgentRawFailedResult | undefined {
+  if (typeof err !== 'object' || err === null || !('error' in err)) return undefined;
+  const body = (err as { error?: unknown }).error;
+  if (typeof body !== 'object' || body === null) return undefined;
+  return asFailedResult(body) ?? asFailedResult((body as { detail?: unknown }).detail);
 }
 
 function toAgentError(

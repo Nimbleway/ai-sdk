@@ -401,6 +401,51 @@ describe('nimbleAgentRunResult — no wait (default)', () => {
     );
   });
 
+  it('maps a 422 whose failure form is wrapped in the detail envelope (failed)', async () => {
+    const { client } = scriptedRunsClient({
+      gets: [completedRun()],
+      result: httpError(422, 'unprocessable', {
+        detail: failedResult('failed', 'graph blew up (detail-wrapped)'),
+      }),
+    });
+    const err = await runResult({ client, agentId: AGENT_ID }, { runId: RUN_ID }).catch(
+      (e: unknown) => e,
+    );
+    expect(err).toMatchObject({
+      name: 'NimbleAgentRunError',
+      reason: 'failed',
+      runId: RUN_ID,
+      runStatus: 'failed',
+    });
+    expect(String(err)).toContain('graph blew up (detail-wrapped)');
+  });
+
+  it('maps a 422 whose failure form is wrapped in the detail envelope (cancelled)', async () => {
+    const { client } = scriptedRunsClient({
+      gets: [completedRun()],
+      result: httpError(422, 'unprocessable', {
+        detail: failedResult('cancelled', 'cancelled upstream (detail-wrapped)'),
+      }),
+    });
+    const err = await runResult({ client, agentId: AGENT_ID }, { runId: RUN_ID }).catch(
+      (e: unknown) => e,
+    );
+    expect(err).toMatchObject({ reason: 'cancelled', runId: RUN_ID, runStatus: 'cancelled' });
+    expect(String(err)).toContain('cancelled upstream (detail-wrapped)');
+  });
+
+  it('keeps a 422 validation-error envelope (detail: array) on the generic request path', async () => {
+    const { client } = scriptedRunsClient({
+      gets: [completedRun()],
+      result: httpError(422, 'validation error', {
+        detail: [{ loc: ['path', 'run_id'], msg: 'value is not a valid uuid', type: 'value_error' }],
+      }),
+    });
+    await expect(runResult({ client, agentId: AGENT_ID }, { runId: RUN_ID })).rejects.toMatchObject(
+      { reason: 'request', status: 422, runId: RUN_ID },
+    );
+  });
+
   it('maps a 200 failed-shape result (no output) to a terminal failure', async () => {
     const { client } = scriptedRunsClient({
       gets: [completedRun()],
