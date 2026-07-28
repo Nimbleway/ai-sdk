@@ -1,5 +1,5 @@
 import { tool } from 'ai';
-import { Nimble } from '@nimble-way/nimble-js';
+import { createNimbleClient } from './client';
 import { nimbleSearchInputSchema } from './schemas';
 import type {
   NimbleSearchClient,
@@ -50,7 +50,7 @@ function resolveClient(config: NimbleSearchToolConfig): NimbleSearchClient {
       'Missing Nimble API key: set NIMBLE_API_KEY or pass { apiKey } to nimbleSearch().',
     );
   }
-  return new Nimble({ apiKey }) as unknown as NimbleSearchClient;
+  return createNimbleClient(apiKey, config.clientOptions) as unknown as NimbleSearchClient;
 }
 
 /**

@@ -76,16 +76,18 @@ export function extractResponse(
   };
 }
 
-/** A spyable mock Nimble extract client. */
+/** A spyable mock Nimble extract client (1.x resource shape: extract.run). */
 export function mockNimbleExtractClient(response: NimbleRawExtractResponse): {
   client: NimbleExtractClient;
   calls: NimbleExtractParams[];
 } {
   const calls: NimbleExtractParams[] = [];
   const client: NimbleExtractClient = {
-    extract: async (params: NimbleExtractParams) => {
-      calls.push(params);
-      return response;
+    extract: {
+      run: async (params: NimbleExtractParams) => {
+        calls.push(params);
+        return response;
+      },
     },
   };
   return { client, calls };

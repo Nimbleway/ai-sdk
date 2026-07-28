@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { NimbleConfigError, NimbleSearchError } from '../src/errors';
+import { NimbleAgentRunError, NimbleConfigError, NimbleSearchError } from '../src/errors';
 
 describe('errors', () => {
   it('NimbleConfigError is an Error with the right name', () => {
@@ -21,5 +21,34 @@ describe('errors', () => {
   it('NimbleSearchError works without options', () => {
     const err = new NimbleSearchError('search failed');
     expect(err.status).toBeUndefined();
+  });
+
+  it('NimbleAgentRunError carries reason, run context, HTTP status, and cause', () => {
+    const cause = new Error('boom');
+    const err = new NimbleAgentRunError('run failed', {
+      reason: 'failed',
+      runId: 'task_run_x',
+      agentId: 'wsa_y',
+      runStatus: 'failed',
+      status: 422,
+      cause,
+    });
+    expect(err).toBeInstanceOf(Error);
+    expect(err.name).toBe('NimbleAgentRunError');
+    expect(err.reason).toBe('failed');
+    expect(err.runId).toBe('task_run_x');
+    expect(err.agentId).toBe('wsa_y');
+    expect(err.runStatus).toBe('failed');
+    expect(err.status).toBe(422);
+    expect(err.cause).toBe(cause);
+  });
+
+  it('NimbleAgentRunError works with only a reason', () => {
+    const err = new NimbleAgentRunError('m', { reason: 'protocol' });
+    expect(err.reason).toBe('protocol');
+    expect(err.runId).toBeUndefined();
+    expect(err.agentId).toBeUndefined();
+    expect(err.status).toBeUndefined();
+    expect(err.cause).toBeUndefined();
   });
 });
