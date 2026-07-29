@@ -164,6 +164,7 @@ describe('SDK type compatibility', () => {
       'sources',
       'skill',
       'use_case',
+      'agent_name',
     ];
     const publishedOnBothRoutes: string[] = [
       'input',
@@ -180,7 +181,10 @@ describe('SDK type compatibility', () => {
     for (const field of sendable) {
       expect(publishedOnBothRoutes).toContain(field);
     }
-    // agent_name is published but deliberately never sent per run.
-    expect(sendable).not.toContain('agent_name');
+    // Every published run-create field this package chooses to support is
+    // covered above; enable_events and previous_interaction_id are published
+    // but intentionally not exposed yet.
+    expect(sendable).not.toContain('enable_events');
+    expect(sendable).not.toContain('previous_interaction_id');
   });
 });

@@ -68,6 +68,9 @@ export const nimbleAgentSourcesSchema = z.object({
 
 export type NimbleAgentSourcesInput = z.infer<typeof nimbleAgentSourcesSchema>;
 
+/** How a run is routed: research, enrichment, or dataset building. */
+export type NimbleAgentUseCase = 'research' | 'enrichment' | 'dataset_building';
+
 /**
  * Input for the start-run tool. The model chooses the research task and may
  * supply the published structured run controls (`effort`, `outputSchema`,
@@ -113,6 +116,14 @@ export const nimbleAgentStartRunInputSchema = z.object({
     .optional()
     .describe(
       'Optional run use case. With an existing agent this must match its configured use case.',
+    ),
+  agentName: z
+    .string()
+    .min(1)
+    .optional()
+    .describe(
+      'Optional stable name for the agent this run uses. Most useful on the ' +
+        'generated-agent route, where it names the agent Nimble creates.',
     ),
 });
 
@@ -203,6 +214,22 @@ export interface NimbleAgentStartRunConfig extends NimbleAgentToolConfig {
    * `sources`. Sent as the run's `sources`.
    */
   sources?: NimbleAgentSourcesInput;
+  /**
+   * Default one-time operating-context override, used when the model does not
+   * supply `skill`. Sent as the run's `skill`.
+   */
+  skill?: string;
+  /**
+   * Default run routing, used when the model does not supply `useCase`. Sent
+   * as the run's `use_case`. With an existing agent it must match that
+   * agent's configured use case.
+   */
+  useCase?: NimbleAgentUseCase;
+  /**
+   * Default agent name, used when the model does not supply `agentName`. Sent
+   * as the run's `agent_name`.
+   */
+  agentName?: string;
 }
 
 /** Bounded-wait behavior for {@link nimbleAgentRunResult}. */
@@ -249,7 +276,9 @@ export interface NimbleAgentRunCreateBody {
   /** One-time operating-context override for the run. */
   skill?: string | null;
   /** Research, enrichment, or dataset-building routing. */
-  use_case?: 'research' | 'enrichment' | 'dataset_building' | null;
+  use_case?: NimbleAgentUseCase | null;
+  /** Stable name for the agent this run uses. */
+  agent_name?: string | null;
 }
 
 /**

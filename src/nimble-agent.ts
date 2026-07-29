@@ -467,14 +467,18 @@ export function nimbleAgentStartRun(config: NimbleAgentStartRunConfig = {}) {
       const outputSchema = input.outputSchema ?? config.outputSchema;
       const inputData = input.inputData ?? config.inputData;
       const sources = input.sources ?? config.sources;
+      const skill = input.skill ?? config.skill;
+      const useCase = input.useCase ?? config.useCase;
+      const agentName = input.agentName ?? config.agentName;
       const body: NimbleAgentRunCreateBody = {
         input: input.task,
         ...(input.effort ? { effort: input.effort } : {}),
         ...(outputSchema ? { output_schema: outputSchema } : {}),
         ...(inputData ? { input_data: inputData } : {}),
         ...(sources ? { sources } : {}),
-        ...(input.skill ? { skill: input.skill } : {}),
-        ...(input.useCase ? { use_case: input.useCase } : {}),
+        ...(skill ? { skill } : {}),
+        ...(useCase ? { use_case: useCase } : {}),
+        ...(agentName ? { agent_name: agentName } : {}),
       };
 
       let run: NimbleAgentRawRun;

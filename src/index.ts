@@ -53,6 +53,7 @@ export type {
   NimbleAgentEffort,
   NimbleAgentReportedEffort,
   NimbleAgentSourcesInput,
+  NimbleAgentUseCase,
   NimbleAgentRunLifecycleStatus,
   NimbleAgentStartRunInput,
   NimbleAgentRunIdInput,

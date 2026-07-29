@@ -54,6 +54,7 @@ async function runStart(
     sources?: Record<string, unknown>;
     skill?: string;
     useCase?: 'research' | 'enrichment' | 'dataset_building';
+    agentName?: string;
   },
 ): Promise<NimbleAgentStartRunOutput> {
   const t = nimbleAgentStartRun(config);
@@ -166,6 +167,7 @@ describe('agent tools — model input schemas', () => {
       'sources',
       'skill',
       'useCase',
+      'agentName',
     ]);
     // The agent id is model-facing on the lifecycle tools by design: it is the
     // handle the start tool returned, and the only way to reach a generated run.
@@ -344,7 +346,7 @@ describe('nimbleAgentStartRun — request mapping', () => {
     expect(override.calls.create[0]!.body.output_schema).toEqual(chosen);
   });
 
-  it('forwards typed skill and use_case on both create routes without agent_name', async () => {
+  it('forwards typed skill, use_case, and agent_name on both create routes', async () => {
     const persistent = scriptedRunsClient();
     await runStart(
       { client: persistent.client, agentId: AGENT_ID },
@@ -354,24 +356,99 @@ describe('nimbleAgentStartRun — request mapping', () => {
         sources: { avoid: 'blogs' },
         skill: 'Prefer official filings',
         useCase: 'research',
+        agentName: 'filings-researcher',
       },
     );
     const generated = scriptedRunsClient();
     await runStart(
       { client: generated.client },
-      { task: 't', skill: 'Build a normalized dataset', useCase: 'dataset_building' },
+      {
+        task: 't',
+        skill: 'Build a normalized dataset',
+        useCase: 'dataset_building',
+        agentName: 'dataset-builder',
+      },
     );
 
     expect(persistent.calls.create[0]!.body).toMatchObject({
       skill: 'Prefer official filings',
       use_case: 'research',
+      agent_name: 'filings-researcher',
     });
     expect(generated.calls.run[0]!.body).toMatchObject({
       skill: 'Build a normalized dataset',
       use_case: 'dataset_building',
+      agent_name: 'dataset-builder',
     });
-    expect(persistent.calls.create[0]!.body).not.toHaveProperty('agent_name');
-    expect(generated.calls.run[0]!.body).not.toHaveProperty('agent_name');
+  });
+
+  // Serialization contract: camelCase model/config fields map to the SDK's
+  // snake_case wire names, exactly once each, with nothing extra added.
+  it('serializes the full control set to snake_case wire fields on both routes', async () => {
+    const outputSchema = { type: 'object', properties: { hq: { type: 'string' } } };
+    const inputData = [{ domain: 'a.com' }];
+    const sources = { prioritize: 'official filings' };
+    const input = {
+      task: 'enrich these',
+      effort: 'medium' as const,
+      outputSchema,
+      inputData,
+      sources,
+      skill: 'Prefer primary sources',
+      useCase: 'enrichment' as const,
+      agentName: 'enricher',
+    };
+    const expected = {
+      input: 'enrich these',
+      effort: 'medium',
+      output_schema: outputSchema,
+      input_data: inputData,
+      sources,
+      skill: 'Prefer primary sources',
+      use_case: 'enrichment',
+      agent_name: 'enricher',
+    };
+
+    const persistent = scriptedRunsClient();
+    await runStart({ client: persistent.client, agentId: AGENT_ID }, input);
+    const generated = scriptedRunsClient();
+    await runStart({ client: generated.client }, input);
+
+    for (const body of [persistent.calls.create[0]!.body, generated.calls.run[0]!.body]) {
+      // Exact equality, so a stray camelCase key or an unpublished extra_body
+      // style field fails instead of slipping through a subset match.
+      expect(body).toEqual(expected);
+      // The camelCase names must never reach the wire.
+      for (const camel of ['outputSchema', 'inputData', 'useCase', 'agentName']) {
+        expect(body).not.toHaveProperty(camel);
+      }
+    }
+  });
+
+  it('falls back to developer-configured skill, useCase, and agentName', async () => {
+    const configured = scriptedRunsClient();
+    await runStart(
+      {
+        client: configured.client,
+        skill: 'Configured skill',
+        useCase: 'research',
+        agentName: 'configured-agent',
+      },
+      { task: 't' },
+    );
+    expect(configured.calls.run[0]!.body).toMatchObject({
+      skill: 'Configured skill',
+      use_case: 'research',
+      agent_name: 'configured-agent',
+    });
+
+    // A model-supplied value wins over the configured default.
+    const overridden = scriptedRunsClient();
+    await runStart(
+      { client: overridden.client, agentName: 'configured-agent' },
+      { task: 't', agentName: 'model-agent' },
+    );
+    expect(overridden.calls.run[0]!.body.agent_name).toBe('model-agent');
   });
 
   it('wraps a create failure with status and agent context', async () => {
