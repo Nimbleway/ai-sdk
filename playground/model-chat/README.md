@@ -35,14 +35,17 @@ Configure one model provider (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, or
 `OPENROUTER_API_KEY`), then:
 
 ```sh
-pnpm install
-pnpm test
-pnpm typecheck
-pnpm build
-pnpm dev
+pnpm install --frozen-lockfile
+pnpm --filter @nimble-way/ai-sdk build
+pnpm --dir playground/model-chat test
+pnpm --dir playground/model-chat typecheck
+pnpm --dir playground/model-chat build
+pnpm --dir playground/model-chat dev
 ```
 
-Local tests never create a billed Nimble run.
+Run these commands from the repository root. Building the linked SDK first is
+required in a clean checkout because the playground resolves its package entry
+from `dist/`. Local tests never create a billed Nimble run.
 
 The three sample queries are scored 94–96/100 under the shared query-testing
 rubric. Each names a human decision, primary-source hierarchy, auditable output

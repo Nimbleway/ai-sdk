@@ -18,7 +18,7 @@
       "use_case",
       "enable_events"
     ],
-    "allowed_efforts": ["low", "medium", "high", "x-high", "max"],
+    "allowed_efforts": ["low", "medium", "high", "x-high"],
     "gated_effort": {
       "tier": "max",
       "treatment": "positive_stop_before_create",
