@@ -17,7 +17,7 @@ export function rawRun(over: Partial<NimbleAgentRawRun> = {}): NimbleAgentRawRun
     interaction_id: 'int_0001',
     status: 'queued',
     is_active: true,
-    effort: 'medium',
+    effort: 'low',
     created_at: '2026-07-22T10:00:00Z',
     web_search_agent_id: AGENT_ID,
     ...over,
@@ -120,8 +120,14 @@ export function httpError(status: number, message: string, body?: unknown): Erro
 }
 
 export interface RecordedCalls {
+  /** Persistent-agent create: `POST /v2/agents/{agent_id}/runs`. */
   create: Array<{
     agentId: string;
+    body: NimbleAgentRunCreateBody;
+    options?: NimbleAgentRequestOptions;
+  }>;
+  /** Generated-agent create: `POST /v2/agents/runs`. */
+  run: Array<{
     body: NimbleAgentRunCreateBody;
     options?: NimbleAgentRequestOptions;
   }>;
@@ -145,14 +151,22 @@ export interface RecordedCalls {
 export function scriptedRunsClient(
   script: {
     create?: NimbleAgentRawRun | Error;
+    /** Response for the generated-agent route; falls back to `create`. */
+    run?: NimbleAgentRawRun | Error;
     gets?: Array<NimbleAgentRawRun | Error>;
     result?: NimbleAgentRawResult | NimbleAgentRawFailedResult | Error;
   } = {},
 ): { client: NimbleAgentRunsClient; calls: RecordedCalls } {
-  const calls: RecordedCalls = { create: [], get: [], result: [] };
+  const calls: RecordedCalls = { create: [], run: [], get: [], result: [] };
   const gets = script.gets ? [...script.gets] : [];
   const client: NimbleAgentRunsClient = {
     agents: {
+      run: async (body, options) => {
+        calls.run.push({ body, options });
+        const entry = script.run ?? script.create ?? rawRun();
+        if (entry instanceof Error) throw entry;
+        return entry;
+      },
       runs: {
         create: async (agentId, body, options) => {
           calls.create.push({ agentId, body, options });

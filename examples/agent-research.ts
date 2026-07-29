@@ -7,13 +7,20 @@
  *   request 1  the model starts a run and replies immediately (milliseconds)
  *   …time passes (your app serves other traffic; the user leaves)…
  *   request 2  the model fetches the finished result and answers with
- *              citations — needing nothing but the runId
+ *              citations — needing nothing but the { runId, agentId } pair
  *
- *   export NIMBLE_API_KEY=...  export OPENAI_API_KEY=...  export NIMBLE_AGENT_ID=wsa_...
+ * No agent instance is required: with NIMBLE_AGENT_ID unset, Nimble generates
+ * one per run and returns its id, which is what makes the run resumable.
+ * This cost-bounded example explicitly uses `low` effort. The reusable tool
+ * otherwise omits effort unless the caller supplies an override. Creation is
+ * never retried.
  *
- *   pnpm agent "your research question"          # full flow in one process
- *   pnpm agent --start-only "your question"      # request 1 only; prints how to resume
- *   pnpm agent --resume task_run_...             # request 2 in a FRESH process
+ *   export NIMBLE_API_KEY=...  export OPENAI_API_KEY=...
+ *   export NIMBLE_AGENT_ID=wsa_...                       # optional
+ *
+ *   pnpm agent "your research question"                  # full flow in one process
+ *   pnpm agent --start-only "your question"              # request 1 only; prints how to resume
+ *   pnpm agent --resume task_run_... wsa_...             # request 2 in a FRESH process
  */
 import { openai } from '@ai-sdk/openai';
 import { generateText, stepCountIs } from 'ai';
@@ -37,17 +44,24 @@ const DEFAULT_TASK =
   'What changed in the EU AI Act enforcement timeline in the last 12 months, ' +
   'and which obligations apply to general-purpose AI providers next? Cite sources.';
 
+/** The handle that crosses between requests: both halves are required. */
+interface RunHandle {
+  runId: string;
+  agentId: string;
+}
+
 /** Request 1 — the model kicks off the run and the request returns instantly. */
-async function startPhase(task: string): Promise<string> {
+async function startPhase(task: string): Promise<RunHandle> {
   const t0 = performance.now();
   const { text, steps } = await generateText({
     model,
     prompt:
-      `Start a deep-research run for this task, then tell the user (one short ` +
+      `Start a low-effort deep-research run for this task (this example uses ` +
+      `low as a local demo cost policy), then tell the user (one short ` +
       `paragraph) that research is underway and their answer will be ready in a ` +
       `few minutes. If starting fails, do NOT claim research is underway — ` +
       `relay exactly what went wrong instead:\n\n${task}`,
-    tools: { startResearch: nimbleAgentStartRun({ effort: 'medium' }) },
+    tools: { startResearch: nimbleAgentStartRun() },
     stopWhen: stepCountIs(2),
   });
 
@@ -68,7 +82,7 @@ async function startPhase(task: string): Promise<string> {
       'is researching in the background',
   );
   console.log('[assistant]', text);
-  return started.runId;
+  return { runId: started.runId, agentId: started.agentId };
 }
 
 /**
@@ -76,14 +90,11 @@ async function startPhase(task: string): Promise<string> {
  * webhook-adjacent worker, or simply the user returning) decides when to ask
  * again. Here: a plain status poll — cheap GETs, no LLM involved.
  */
-async function waitUntilTerminal(runId: string): Promise<void> {
+async function waitUntilTerminal(handle: RunHandle): Promise<void> {
   const status = nimbleAgentRunStatus();
   const t0 = performance.now();
   for (;;) {
-    const snapshot = (await status.execute!(
-      { runId },
-      directOpts,
-    )) as NimbleAgentRunStatusOutput;
+    const snapshot = (await status.execute!(handle, directOpts)) as NimbleAgentRunStatusOutput;
     console.log(
       `[status] ${snapshot.status} — ${Math.round((performance.now() - t0) / 1000)}s elapsed`,
     );
@@ -92,14 +103,14 @@ async function waitUntilTerminal(runId: string): Promise<void> {
   }
 }
 
-/** Request 2 — a fresh request (or process): only the runId crosses over. */
-async function resumePhase(runId: string): Promise<void> {
+/** Request 2 — a fresh request (or process): only the pair crosses over. */
+async function resumePhase({ runId, agentId }: RunHandle): Promise<void> {
   const t0 = performance.now();
   const { text, steps } = await generateText({
     model,
     prompt:
-      `The user is back. A deep-research run was started earlier for them: ${runId}. ` +
-      `Fetch its result. If it is not ready yet, say so briefly. If it is ready, ` +
+      `The user is back. A deep-research run was started earlier for them: ` +
+      `runId ${runId} on agent ${agentId}. Fetch its result. If it is not ready yet, say so briefly. If it is ready, ` +
       `answer the user's research question from it, keeping the numbered citation ` +
       `callouts, and finish with a short source list.`,
     tools: { getResearchResult: nimbleAgentRunResult() },
@@ -132,26 +143,29 @@ async function main() {
   const resumeAt = args.indexOf('--resume');
   if (resumeAt !== -1) {
     const runId = args[resumeAt + 1];
-    if (!runId) throw new Error('Usage: pnpm agent --resume task_run_...');
-    await resumePhase(runId);
+    const agentId = args[resumeAt + 2] ?? process.env.NIMBLE_AGENT_ID;
+    if (!runId || !agentId) {
+      throw new Error('Usage: pnpm agent --resume <task_run_...> <wsa_...>');
+    }
+    await resumePhase({ runId, agentId });
     return;
   }
 
   const startOnly = args.includes('--start-only');
   const task = args.filter((a) => a !== '--start-only').join(' ') || DEFAULT_TASK;
 
-  const runId = await startPhase(task);
+  const handle = await startPhase(task);
   if (startOnly) {
     console.log(
       `\nResume later — in a completely separate process if you like:\n` +
-        `  pnpm agent --resume ${runId}`,
+        `  pnpm agent --resume ${handle.runId} ${handle.agentId}`,
     );
     return;
   }
 
   console.log('\n…the app is free; simulating the user coming back later…');
-  await waitUntilTerminal(runId);
-  await resumePhase(runId);
+  await waitUntilTerminal(handle);
+  await resumePhase(handle);
 }
 
 main().catch((err) => {

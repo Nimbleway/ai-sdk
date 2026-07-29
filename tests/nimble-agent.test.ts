@@ -9,6 +9,7 @@ import {
 import {
   nimbleAgentRunIdInputSchema,
   nimbleAgentStartRunInputSchema,
+  NIMBLE_AGENT_EFFORTS,
 } from '../src/agent-schemas';
 import type {
   NimbleAgentRunCompletedOutput,
@@ -16,6 +17,7 @@ import type {
   NimbleAgentRunResultConfig,
   NimbleAgentRunResultOutput,
   NimbleAgentRunStatusOutput,
+  NimbleAgentEffort,
   NimbleAgentStartRunConfig,
   NimbleAgentStartRunOutput,
   NimbleAgentToolConfig,
@@ -44,7 +46,15 @@ function execOptsWithSignal(signal: AbortSignal) {
 
 async function runStart(
   config: NimbleAgentStartRunConfig,
-  input: { task: string; effort?: 'low' | 'medium' | 'high' | 'x-high' | 'max' },
+  input: {
+    task: string;
+    effort?: NimbleAgentEffort;
+    outputSchema?: Record<string, unknown>;
+    inputData?: Record<string, unknown> | Array<Record<string, unknown>>;
+    sources?: Record<string, unknown>;
+    skill?: string;
+    useCase?: 'research' | 'enrichment' | 'dataset_building';
+  },
 ): Promise<NimbleAgentStartRunOutput> {
   const t = nimbleAgentStartRun(config);
   if (!t.execute) throw new Error('tool has no execute');
@@ -53,21 +63,27 @@ async function runStart(
 
 async function runStatus(
   config: NimbleAgentToolConfig,
-  input: { runId: string },
+  input: { runId: string; agentId?: string },
 ): Promise<NimbleAgentRunStatusOutput> {
   const t = nimbleAgentRunStatus(config);
   if (!t.execute) throw new Error('tool has no execute');
-  return (await t.execute(input, execOpts)) as NimbleAgentRunStatusOutput;
+  return (await t.execute(
+    { agentId: AGENT_ID, ...input },
+    execOpts,
+  )) as NimbleAgentRunStatusOutput;
 }
 
 async function runResult(
   config: NimbleAgentRunResultConfig,
-  input: { runId: string },
+  input: { runId: string; agentId?: string },
   opts: unknown = execOpts,
 ): Promise<NimbleAgentRunResultOutput> {
   const t = nimbleAgentRunResult(config);
   if (!t.execute) throw new Error('tool has no execute');
-  return (await t.execute(input, opts as never)) as NimbleAgentRunResultOutput;
+  return (await t.execute(
+    { agentId: AGENT_ID, ...input },
+    opts as never,
+  )) as NimbleAgentRunResultOutput;
 }
 
 describe('agent tools — construction & defaults', () => {
@@ -79,9 +95,11 @@ describe('agent tools — construction & defaults', () => {
   });
 
   it('exposes conservative defaults', () => {
-    expect(NIMBLE_AGENT_DEFAULTS.effortCap).toBe('high');
+    // C03: run creation is single-shot. Effort has no package default.
+    expect(NIMBLE_AGENT_DEFAULTS).not.toHaveProperty('effort');
+    expect(NIMBLE_AGENT_DEFAULTS.createMaxRetries).toBe(0);
     expect(NIMBLE_AGENT_DEFAULTS.waitTimeoutMs).toBe(300_000);
-    expect(NIMBLE_AGENT_DEFAULTS.pollIntervalMs).toBe(2_000);
+    expect(NIMBLE_AGENT_DEFAULTS.pollIntervalMs).toBe(10_000);
   });
 });
 
@@ -92,35 +110,95 @@ describe('agent tools — model input schemas', () => {
     expect(nimbleAgentStartRunInputSchema.safeParse({ task: 'research X' }).success).toBe(true);
   });
 
-  it('start: validates the effort enum', () => {
-    expect(
-      nimbleAgentStartRunInputSchema.safeParse({ task: 't', effort: 'x-high' }).success,
-    ).toBe(true);
-    expect(nimbleAgentStartRunInputSchema.safeParse({ task: 't', effort: 'ultra' }).success).toBe(
-      false,
-    );
+  it('start: keeps max selectable while rejecting unknown tiers', () => {
+    expect(NIMBLE_AGENT_EFFORTS).toEqual(['low', 'medium', 'high', 'x-high', 'max']);
+    for (const tier of NIMBLE_AGENT_EFFORTS) {
+      expect(nimbleAgentStartRunInputSchema.safeParse({ task: 't', effort: tier }).success).toBe(
+        true,
+      );
+    }
+    for (const tier of ['ultra']) {
+      expect(nimbleAgentStartRunInputSchema.safeParse({ task: 't', effort: tier }).success).toBe(
+        false,
+      );
+    }
   });
 
-  it('start/status/result: never expose apiKey or agentId to the model', () => {
+  // C07 / C08 / C09: the published structured controls are model-reachable.
+  it('start: accepts outputSchema, inputData (object or list), and sources', () => {
+    const outputSchema = { type: 'object', properties: { name: { type: 'string' } } };
+    expect(
+      nimbleAgentStartRunInputSchema.safeParse({
+        task: 't',
+        outputSchema,
+        inputData: { domain: 'example.com' },
+        sources: {
+          allow: [{ title: 'Regulators', domains: ['europa.eu'] }],
+          block: [{ title: 'Forums', domains: ['reddit.com'], order: 0 }],
+          prioritize: 'official filings',
+          avoid: 'press releases',
+        },
+      }).success,
+    ).toBe(true);
+    expect(
+      nimbleAgentStartRunInputSchema.safeParse({
+        task: 't',
+        inputData: [{ domain: 'a.com' }, { domain: 'b.com' }],
+      }).success,
+    ).toBe(true);
+    // A source group without domains is not usable guidance.
+    expect(
+      nimbleAgentStartRunInputSchema.safeParse({
+        task: 't',
+        sources: { allow: [{ title: 'Empty', domains: [] }] },
+      }).success,
+    ).toBe(false);
+  });
+
+  it('start/status/result: never expose apiKey to the model', () => {
     const startKeys = Object.keys(nimbleAgentStartRunInputSchema.shape);
     const runIdKeys = Object.keys(nimbleAgentRunIdInputSchema.shape);
-    expect(startKeys).toEqual(['task', 'effort']);
-    expect(runIdKeys).toEqual(['runId']);
+    expect(startKeys).toEqual([
+      'task',
+      'effort',
+      'outputSchema',
+      'inputData',
+      'sources',
+      'skill',
+      'useCase',
+    ]);
+    // The agent id is model-facing on the lifecycle tools by design: it is the
+    // handle the start tool returned, and the only way to reach a generated run.
+    expect(runIdKeys).toEqual(['runId', 'agentId']);
+    for (const keys of [startKeys, runIdKeys]) {
+      expect(keys).not.toContain('apiKey');
+    }
   });
 
-  it('status/result: require a non-empty runId', () => {
+  // C05: both halves of the pair are required to address a run.
+  it('status/result: require a non-empty runId AND agentId', () => {
     expect(nimbleAgentRunIdInputSchema.safeParse({}).success).toBe(false);
-    expect(nimbleAgentRunIdInputSchema.safeParse({ runId: '' }).success).toBe(false);
-    expect(nimbleAgentRunIdInputSchema.safeParse({ runId: RUN_ID }).success).toBe(true);
+    expect(nimbleAgentRunIdInputSchema.safeParse({ runId: '', agentId: AGENT_ID }).success).toBe(
+      false,
+    );
+    expect(nimbleAgentRunIdInputSchema.safeParse({ runId: RUN_ID }).success).toBe(false);
+    expect(nimbleAgentRunIdInputSchema.safeParse({ runId: RUN_ID, agentId: '' }).success).toBe(
+      false,
+    );
+    expect(
+      nimbleAgentRunIdInputSchema.safeParse({ runId: RUN_ID, agentId: AGENT_ID }).success,
+    ).toBe(true);
   });
 });
 
 describe('nimbleAgentStartRun — request mapping', () => {
-  it('creates a run with (agentId, { input: task }) and returns the real run id immediately', async () => {
+  // C02: an agent is configured → exactly one persistent-agent create.
+  it('creates a run with (agentId, body) and returns the run + agent pair immediately', async () => {
     const { client, calls } = scriptedRunsClient();
     const out = await runStart({ client, agentId: AGENT_ID }, { task: 'research the EU AI Act' });
 
     expect(calls.create).toHaveLength(1);
+    expect(calls.run).toHaveLength(0);
     expect(calls.create[0]!.agentId).toBe(AGENT_ID);
     expect(calls.create[0]!.body).toEqual({ input: 'research the EU AI Act' });
     expect(out.runId).toBe(RUN_ID);
@@ -130,40 +208,170 @@ describe('nimbleAgentStartRun — request mapping', () => {
     expect(out.createdAt).toBe('2026-07-22T10:00:00Z');
   });
 
-  it('omits effort entirely when neither config nor model set one (agent default applies)', async () => {
-    const { client, calls } = scriptedRunsClient();
-    await runStart({ client, agentId: AGENT_ID }, { task: 't' });
-    expect('effort' in calls.create[0]!.body).toBe(false);
+  // C01: no agent configured → exactly one generated-agent create.
+  it('routes to the generated-agent create when no agent id is configured', async () => {
+    const generatedAgent = 'wsa_generated-0000-4000-8000-000000000009';
+    const { client, calls } = scriptedRunsClient({
+      run: rawRun({ web_search_agent_id: generatedAgent }),
+    });
+    const out = await runStart({ client }, { task: 'research the EU AI Act' });
+
+    expect(calls.run).toHaveLength(1);
+    expect(calls.create).toHaveLength(0);
+    expect(calls.run[0]!.body).toEqual({ input: 'research the EU AI Act' });
+    // C05: the RETURNED agent identity is what comes back, not a configured one.
+    expect(out.agentId).toBe(generatedAgent);
+    expect(out.runId).toBe(RUN_ID);
   });
 
-  it('uses the configured effort when the model does not choose one', async () => {
-    const { client, calls } = scriptedRunsClient();
-    await runStart({ client, agentId: AGENT_ID, effort: 'low' }, { task: 't' });
-    expect(calls.create[0]!.body.effort).toBe('low');
+  it('fails with a protocol error when a generated run comes back without an owner', async () => {
+    const { client } = scriptedRunsClient({ run: rawRun({ web_search_agent_id: '' }) });
+    await expect(runStart({ client }, { task: 't' })).rejects.toMatchObject({
+      name: 'NimbleAgentRunError',
+      reason: 'protocol',
+      runId: RUN_ID,
+    });
   });
 
-  it('passes a model-chosen effort at or below the cap', async () => {
-    const { client, calls } = scriptedRunsClient();
-    await runStart({ client, agentId: AGENT_ID }, { task: 't', effort: 'high' });
-    expect(calls.create[0]!.body.effort).toBe('high');
+  it('omits unspecified effort and forwards supported overrides on both routes', async () => {
+    const persistent = scriptedRunsClient();
+    await runStart({ client: persistent.client, agentId: AGENT_ID }, { task: 't' });
+    expect(persistent.calls.create[0]!.body).not.toHaveProperty('effort');
+
+    const explicit = scriptedRunsClient();
+    await runStart({ client: explicit.client, agentId: AGENT_ID }, { task: 't', effort: 'x-high' });
+    expect(explicit.calls.create[0]!.body.effort).toBe('x-high');
+
+    const generated = scriptedRunsClient();
+    await runStart({ client: generated.client }, { task: 't' });
+    expect(generated.calls.run[0]!.body).not.toHaveProperty('effort');
   });
 
-  it('clamps a model-chosen effort above the default cap (high)', async () => {
-    const { client, calls } = scriptedRunsClient();
-    await runStart({ client, agentId: AGENT_ID }, { task: 't', effort: 'max' });
-    expect(calls.create[0]!.body.effort).toBe('high');
+  it('promotes gated max with contact guidance and makes no create request', async () => {
+    const gated = scriptedRunsClient();
+    await expect(runStart({ client: gated.client }, { task: 't', effort: 'max' })).rejects.toThrow(
+      /custom budget.*https:\/\/www\.nimbleway\.com\/contact/i,
+    );
+    expect(gated.calls.run).toHaveLength(0);
+    expect(gated.calls.create).toHaveLength(0);
   });
 
-  it('lets a developer raise the cap to allow max', async () => {
-    const { client, calls } = scriptedRunsClient();
-    await runStart({ client, agentId: AGENT_ID, effortCap: 'max' }, { task: 't', effort: 'max' });
-    expect(calls.create[0]!.body.effort).toBe('max');
+  // C03: create is single-shot — retries disabled per request on both routes.
+  it('disables SDK retries on both create routes', async () => {
+    const persistent = scriptedRunsClient();
+    await runStart({ client: persistent.client, agentId: AGENT_ID }, { task: 't' });
+    expect(persistent.calls.create[0]!.options?.maxRetries).toBe(0);
+
+    const generated = scriptedRunsClient();
+    await runStart({ client: generated.client }, { task: 't' });
+    expect(generated.calls.run[0]!.options?.maxRetries).toBe(0);
   });
 
-  it('does not let a model effort override a LOWER developer cap', async () => {
-    const { client, calls } = scriptedRunsClient();
-    await runStart({ client, agentId: AGENT_ID, effortCap: 'low' }, { task: 't', effort: 'high' });
-    expect(calls.create[0]!.body.effort).toBe('low');
+  // C03: a failed create is never re-attempted by this package, on any route.
+  it.each([
+    ['transport failure', new Error('socket hang up')],
+    ['408', httpError(408, 'request timeout')],
+    ['409', httpError(409, 'conflict')],
+    ['429', httpError(429, 'rate limited')],
+    ['500', httpError(500, 'internal error')],
+    ['503', httpError(503, 'unavailable')],
+  ])('makes exactly one create attempt on %s', async (_label, failure) => {
+    const persistent = scriptedRunsClient({ create: failure });
+    await expect(
+      runStart({ client: persistent.client, agentId: AGENT_ID }, { task: 't' }),
+    ).rejects.toBeInstanceOf(NimbleAgentRunError);
+    expect(persistent.calls.create).toHaveLength(1);
+
+    const generated = scriptedRunsClient({ run: failure });
+    await expect(runStart({ client: generated.client }, { task: 't' })).rejects.toBeInstanceOf(
+      NimbleAgentRunError,
+    );
+    expect(generated.calls.run).toHaveLength(1);
+    expect(generated.calls.create).toHaveLength(0);
+  });
+
+  // C07 / C08 / C09: structured controls pass through unchanged on both routes.
+  it('passes model-supplied outputSchema, inputData, and sources through unchanged', async () => {
+    const outputSchema = { type: 'object', properties: { revenue: { type: 'number' } } };
+    const inputData = [{ domain: 'a.com' }, { domain: 'b.com' }];
+    const sources = {
+      allow: [{ title: 'Regulators', domains: ['sec.gov', 'europa.eu'] }],
+      prioritize: 'official filings',
+    };
+
+    const persistent = scriptedRunsClient();
+    await runStart(
+      { client: persistent.client, agentId: AGENT_ID },
+      { task: 'enrich these', outputSchema, inputData, sources },
+    );
+    expect(persistent.calls.create[0]!.body).toEqual({
+      input: 'enrich these',
+      output_schema: outputSchema,
+      input_data: inputData,
+      sources,
+    });
+
+    const generated = scriptedRunsClient();
+    await runStart(
+      { client: generated.client },
+      { task: 'enrich these', outputSchema, inputData, sources },
+    );
+    expect(generated.calls.run[0]!.body).toEqual({
+      input: 'enrich these',
+      output_schema: outputSchema,
+      input_data: inputData,
+      sources,
+    });
+  });
+
+  it('falls back to developer-configured structured controls, and the model overrides them', async () => {
+    const configured = { type: 'object', properties: { a: { type: 'string' } } };
+    const chosen = { type: 'object', properties: { b: { type: 'string' } } };
+
+    const fallback = scriptedRunsClient();
+    await runStart(
+      { client: fallback.client, agentId: AGENT_ID, outputSchema: configured, sources: { avoid: 'blogs' } },
+      { task: 't' },
+    );
+    expect(fallback.calls.create[0]!.body.output_schema).toEqual(configured);
+    expect(fallback.calls.create[0]!.body.sources).toEqual({ avoid: 'blogs' });
+
+    const override = scriptedRunsClient();
+    await runStart(
+      { client: override.client, agentId: AGENT_ID, outputSchema: configured },
+      { task: 't', outputSchema: chosen },
+    );
+    expect(override.calls.create[0]!.body.output_schema).toEqual(chosen);
+  });
+
+  it('forwards typed skill and use_case on both create routes without agent_name', async () => {
+    const persistent = scriptedRunsClient();
+    await runStart(
+      { client: persistent.client, agentId: AGENT_ID },
+      {
+        task: 't',
+        outputSchema: { type: 'object' },
+        sources: { avoid: 'blogs' },
+        skill: 'Prefer official filings',
+        useCase: 'research',
+      },
+    );
+    const generated = scriptedRunsClient();
+    await runStart(
+      { client: generated.client },
+      { task: 't', skill: 'Build a normalized dataset', useCase: 'dataset_building' },
+    );
+
+    expect(persistent.calls.create[0]!.body).toMatchObject({
+      skill: 'Prefer official filings',
+      use_case: 'research',
+    });
+    expect(generated.calls.run[0]!.body).toMatchObject({
+      skill: 'Build a normalized dataset',
+      use_case: 'dataset_building',
+    });
+    expect(persistent.calls.create[0]!.body).not.toHaveProperty('agent_name');
+    expect(generated.calls.run[0]!.body).not.toHaveProperty('agent_name');
   });
 
   it('wraps a create failure with status and agent context', async () => {
@@ -187,13 +395,20 @@ describe('agent tools — config resolution', () => {
     delete process.env.NIMBLE_AGENT_ID;
   });
   afterEach(() => {
+    // Restore-or-remove: a plain `if (saved !== undefined)` leaks a var this
+    // block SET into every later test in the file (it did — the identity
+    // suites then saw a "configured" agent that no test configured).
     if (savedKey !== undefined) process.env.NIMBLE_API_KEY = savedKey;
+    else delete process.env.NIMBLE_API_KEY;
     if (savedAgent !== undefined) process.env.NIMBLE_AGENT_ID = savedAgent;
+    else delete process.env.NIMBLE_AGENT_ID;
   });
 
-  it('throws NimbleConfigError when no agent id is resolvable', async () => {
-    const { client } = scriptedRunsClient();
-    await expect(runStart({ client }, { task: 't' })).rejects.toBeInstanceOf(NimbleConfigError);
+  it('needs no agent id at all — an unconfigured start uses the generated route', async () => {
+    const { client, calls } = scriptedRunsClient();
+    await expect(runStart({ client }, { task: 't' })).resolves.toBeTruthy();
+    expect(calls.run).toHaveLength(1);
+    expect(calls.create).toHaveLength(0);
   });
 
   it('resolves the agent id from NIMBLE_AGENT_ID', async () => {
@@ -229,10 +444,18 @@ describe('nimbleAgentRunStatus', () => {
       agentId: AGENT_ID,
       status: 'running',
       isActive: true,
-      effort: 'medium',
+      effort: 'low',
       startedAt: '2026-07-22T10:00:05Z',
     });
     expect(out.completedAt).toBeUndefined();
+  });
+
+  // We only ever request `low`, but an agent instance configured elsewhere can
+  // report a higher tier — reading a run must not choke on it.
+  it('reports a higher server-side effort tier verbatim', async () => {
+    const { client } = scriptedRunsClient({ gets: [rawRun({ effort: 'x-high' })] });
+    const out = await runStatus({ client, agentId: AGENT_ID }, { runId: RUN_ID });
+    expect(out.effort).toBe('x-high');
   });
 
   it('surfaces the server error message on failed runs', async () => {
@@ -519,6 +742,7 @@ describe('nimbleAgentRunResult — no wait (default)', () => {
     // `??` default would swallow a null script entry).
     const nullResultClient = {
       agents: {
+        run: async () => rawRun(),
         runs: {
           create: async () => rawRun(),
           get: async () => completedRun(),
@@ -539,17 +763,261 @@ describe('nimbleAgentRunResult — state-independent resumability', () => {
     const started = await runStart({ client: a.client, agentId: AGENT_ID }, { task: 't' });
 
     // …process B (new factory instance, new client, no shared state) resumes
-    // from nothing but config agentId + the runId string.
+    // from nothing but the { runId, agentId } pair A returned.
     const b = scriptedRunsClient({ gets: [completedRun()], result: completedTextResult() });
-    const out = await runResult({ client: b.client, agentId: AGENT_ID }, { runId: started.runId });
+    const out = await runResult(
+      { client: b.client },
+      { runId: started.runId, agentId: started.agentId },
+    );
 
     expect(out.ready).toBe(true);
     expect(b.calls.get[0]!.runId).toBe(started.runId);
     expect(a.calls.get).toHaveLength(0); // A was never consulted again.
   });
+
+  // C05: a generated run is resumable with no configuration whatsoever.
+  it('resumes a GENERATED run using only the returned pair (no configured agent)', async () => {
+    const generatedAgent = 'wsa_generated-0000-4000-8000-000000000009';
+    const generatedRun = rawRun({ web_search_agent_id: generatedAgent });
+    const a = scriptedRunsClient({ run: generatedRun });
+    const started = await runStart({ client: a.client }, { task: 't' });
+    expect(started.agentId).toBe(generatedAgent);
+
+    const b = scriptedRunsClient({
+      gets: [completedRun({ web_search_agent_id: generatedAgent })],
+      result: {
+        run: completedRun({ web_search_agent_id: generatedAgent }),
+        output: { type: 'text', content: 'done [1]', trust: textTrust() },
+      },
+    });
+    const out = await runResult(
+      { client: b.client },
+      { runId: started.runId, agentId: started.agentId },
+    );
+
+    // The RETURNED agent id — not a configured fallback — addressed both calls.
+    expect(b.calls.get[0]!.params).toEqual({ agent_id: generatedAgent });
+    expect(b.calls.result[0]!.params).toEqual({ agent_id: generatedAgent });
+    expect(out.ready).toBe(true);
+    expect(out.agentId).toBe(generatedAgent);
+  });
+});
+
+// C06: identity consistency — never silently substitute or accept a foreign owner.
+describe('agent lifecycle — run/agent identity guards', () => {
+  const OTHER_AGENT = 'wsa_deadbeef-0000-4000-8000-00000000ffff';
+  const OTHER_RUN = 'task_run_99999999-2222-4333-8444-555555555555';
+
+  it('rejects a pair naming a different agent than the configured one', async () => {
+    for (const call of [
+      () => runStatus({ client: scriptedRunsClient().client, agentId: AGENT_ID }, { runId: RUN_ID, agentId: OTHER_AGENT }),
+      () => runResult({ client: scriptedRunsClient().client, agentId: AGENT_ID }, { runId: RUN_ID, agentId: OTHER_AGENT }),
+    ]) {
+      await expect(call()).rejects.toMatchObject({
+        name: 'NimbleAgentRunError',
+        reason: 'protocol',
+        runId: RUN_ID,
+        agentId: OTHER_AGENT,
+      });
+    }
+  });
+
+  it('never queries the API when the configured/requested agents disagree', async () => {
+    const { client, calls } = scriptedRunsClient();
+    await expect(
+      runStatus({ client, agentId: AGENT_ID }, { runId: RUN_ID, agentId: OTHER_AGENT }),
+    ).rejects.toBeInstanceOf(NimbleAgentRunError);
+    expect(calls.get).toHaveLength(0);
+  });
+
+  it('accepts a pair with no configured agent (generated-run case)', async () => {
+    const { client, calls } = scriptedRunsClient({
+      gets: [rawRun({ web_search_agent_id: OTHER_AGENT })],
+    });
+    const out = await runStatus({ client }, { runId: RUN_ID, agentId: OTHER_AGENT });
+    expect(calls.get[0]!.params).toEqual({ agent_id: OTHER_AGENT });
+    expect(out.agentId).toBe(OTHER_AGENT);
+  });
+
+  it('rejects a status payload for a different run', async () => {
+    const { client } = scriptedRunsClient({ gets: [rawRun({ id: OTHER_RUN })] });
+    await expect(
+      runStatus({ client, agentId: AGENT_ID }, { runId: RUN_ID }),
+    ).rejects.toMatchObject({ name: 'NimbleAgentRunError', reason: 'protocol', runId: RUN_ID });
+  });
+
+  it('rejects a status payload owned by a different agent', async () => {
+    const { client } = scriptedRunsClient({ gets: [rawRun({ web_search_agent_id: OTHER_AGENT })] });
+    await expect(
+      runStatus({ client, agentId: AGENT_ID }, { runId: RUN_ID }),
+    ).rejects.toMatchObject({ name: 'NimbleAgentRunError', reason: 'protocol', runId: RUN_ID });
+  });
+
+  // The Qodo finding: the RESULT payload's embedded run must be re-checked.
+  it('rejects a completed result whose embedded run.id is a different run', async () => {
+    const { client } = scriptedRunsClient({
+      gets: [completedRun()],
+      result: {
+        run: completedRun({ id: OTHER_RUN }),
+        output: { type: 'text', content: 'someone else answer [1]', trust: textTrust() },
+      },
+    });
+    await expect(
+      runResult({ client, agentId: AGENT_ID }, { runId: RUN_ID }),
+    ).rejects.toMatchObject({ name: 'NimbleAgentRunError', reason: 'protocol', runId: RUN_ID });
+  });
+
+  it('rejects a completed result whose embedded run belongs to a different agent', async () => {
+    const { client } = scriptedRunsClient({
+      gets: [completedRun()],
+      result: {
+        run: completedRun({ web_search_agent_id: OTHER_AGENT }),
+        output: { type: 'text', content: 'someone else answer [1]', trust: textTrust() },
+      },
+    });
+    await expect(
+      runResult({ client, agentId: AGENT_ID }, { runId: RUN_ID }),
+    ).rejects.toMatchObject({ name: 'NimbleAgentRunError', reason: 'protocol', runId: RUN_ID });
+  });
+
+  it('rejects a FAILED-form result payload for a different run', async () => {
+    const foreign = failedResult();
+    const { client } = scriptedRunsClient({
+      gets: [completedRun()],
+      result: { ...foreign, run: { ...foreign.run, id: OTHER_RUN } },
+    });
+    await expect(
+      runResult({ client, agentId: AGENT_ID }, { runId: RUN_ID }),
+    ).rejects.toMatchObject({ name: 'NimbleAgentRunError', reason: 'protocol', runId: RUN_ID });
+  });
+
+  it('rejects a 422 failure envelope describing a different run', async () => {
+    const foreign = failedResult();
+    const { client } = scriptedRunsClient({
+      gets: [completedRun()],
+      result: httpError(422, 'unprocessable', {
+        ...foreign,
+        run: { ...foreign.run, id: OTHER_RUN },
+      }),
+    });
+    await expect(
+      runResult({ client, agentId: AGENT_ID }, { runId: RUN_ID }),
+    ).rejects.toMatchObject({ name: 'NimbleAgentRunError', reason: 'protocol', runId: RUN_ID });
+  });
+
+  it('rejects a poll response that switches to a different run mid-wait', async () => {
+    const { client } = scriptedRunsClient({
+      gets: [rawRun({ status: 'running' }), rawRun({ id: OTHER_RUN, status: 'running' })],
+    });
+    await expect(
+      runResult(
+        { client, agentId: AGENT_ID, wait: { timeoutMs: 500, pollIntervalMs: 100 } },
+        { runId: RUN_ID },
+      ),
+    ).rejects.toMatchObject({ name: 'NimbleAgentRunError', reason: 'protocol', runId: RUN_ID });
+  });
+
+  // Missing identity is as unsafe as wrong identity: with no verifiable owner
+  // the payload cannot be shown to belong to this run, and the configured id
+  // is not a valid stand-in (on a generated run it names a different agent).
+  const missingOwner = [
+    ['empty', ''],
+    ['absent', undefined],
+  ] as const;
+
+  it.each(missingOwner)('rejects a status payload with an %s owner', async (_label, owner) => {
+    const { client } = scriptedRunsClient({
+      gets: [rawRun({ web_search_agent_id: owner as string })],
+    });
+    await expect(
+      runStatus({ client, agentId: AGENT_ID }, { runId: RUN_ID }),
+    ).rejects.toMatchObject({ name: 'NimbleAgentRunError', reason: 'protocol', runId: RUN_ID });
+  });
+
+  it.each(missingOwner)('rejects a completed result with an %s owner', async (_label, owner) => {
+    const { client } = scriptedRunsClient({
+      gets: [completedRun()],
+      result: {
+        run: completedRun({ web_search_agent_id: owner as string }),
+        output: { type: 'text', content: 'answer [1]', trust: textTrust() },
+      },
+    });
+    await expect(
+      runResult({ client, agentId: AGENT_ID }, { runId: RUN_ID }),
+    ).rejects.toMatchObject({ name: 'NimbleAgentRunError', reason: 'protocol', runId: RUN_ID });
+  });
+
+  it.each(missingOwner)('rejects a 422 failure envelope with an %s owner', async (_label, owner) => {
+    const foreign = failedResult();
+    const { client } = scriptedRunsClient({
+      gets: [completedRun()],
+      result: httpError(422, 'unprocessable', {
+        ...foreign,
+        run: { ...foreign.run, web_search_agent_id: owner as string },
+      }),
+    });
+    await expect(
+      runResult({ client, agentId: AGENT_ID }, { runId: RUN_ID }),
+    ).rejects.toMatchObject({ name: 'NimbleAgentRunError', reason: 'protocol', runId: RUN_ID });
+  });
+
+  it('rejects a result payload with a missing run id', async () => {
+    const { client } = scriptedRunsClient({
+      gets: [completedRun()],
+      result: {
+        run: completedRun({ id: undefined as unknown as string }),
+        output: { type: 'text', content: 'answer [1]', trust: textTrust() },
+      },
+    });
+    await expect(
+      runResult({ client, agentId: AGENT_ID }, { runId: RUN_ID }),
+    ).rejects.toMatchObject({ name: 'NimbleAgentRunError', reason: 'protocol', runId: RUN_ID });
+  });
+
+  // C05: a create response with no owner started (and billed) an unresumable
+  // run — on BOTH routes. The configured agent must not paper over it.
+  it.each(missingOwner)(
+    'rejects a generated-route create whose response has an %s owner',
+    async (_label, owner) => {
+      const { client } = scriptedRunsClient({
+        run: rawRun({ web_search_agent_id: owner as string }),
+      });
+      await expect(runStart({ client }, { task: 't' })).rejects.toMatchObject({
+        name: 'NimbleAgentRunError',
+        reason: 'protocol',
+        runId: RUN_ID,
+      });
+    },
+  );
+
+  it.each(missingOwner)(
+    'rejects a persistent-route create whose response has an %s owner',
+    async (_label, owner) => {
+      const { client } = scriptedRunsClient({
+        create: rawRun({ web_search_agent_id: owner as string }),
+      });
+      await expect(runStart({ client, agentId: AGENT_ID }, { task: 't' })).rejects.toMatchObject({
+        name: 'NimbleAgentRunError',
+        reason: 'protocol',
+        runId: RUN_ID,
+      });
+    },
+  );
+
+  it('rejects a create response with no run id', async () => {
+    const { client } = scriptedRunsClient({
+      create: rawRun({ id: undefined as unknown as string }),
+    });
+    await expect(runStart({ client, agentId: AGENT_ID }, { task: 't' })).rejects.toMatchObject({
+      name: 'NimbleAgentRunError',
+      reason: 'protocol',
+    });
+  });
 });
 
 describe('nimbleAgentRunResult — bounded wait', () => {
+  // Short poll intervals in this block are test-only overrides that keep the
+  // suite fast; production/runtime callers inherit the 10-second default.
   it('polls until completion then fetches the result', async () => {
     const { client, calls } = scriptedRunsClient({
       gets: [rawRun({ status: 'queued' }), rawRun({ status: 'running' }), completedRun()],

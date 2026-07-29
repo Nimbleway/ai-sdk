@@ -123,13 +123,15 @@ Because a run outlives any sensible HTTP request, the tools split the lifecycle:
 ### Setup
 
 1. An API key, as for the other tools: `export NIMBLE_API_KEY=...` (server-side only — the key never appears in model inputs or tool outputs).
-2. A research agent instance, created **once** in the [Nimble console](https://app.nimbleway.com) (or via the Agents API — see [sdk.nimbleway.com/docs](https://sdk.nimbleway.com/docs)). Its ID looks like `wsa_…`:
+2. **Optionally**, a research agent instance. Without one, Nimble generates a minimal agent for each run and returns its ID — nothing to create, nothing to configure. With one, created **once** in the [Nimble console](https://app.nimbleway.com) (or via the Agents API — see [sdk.nimbleway.com/docs](https://sdk.nimbleway.com/docs)), runs go to that instance and inherit its goals and sources:
 
 ```bash
-export NIMBLE_AGENT_ID=wsa_...   # picked up automatically
+export NIMBLE_AGENT_ID=wsa_...   # optional; picked up automatically when set
 ```
 
-The developer configuration owns the agent ID and credentials; the **model** only ever chooses the research `task` (and, optionally, a capped `effort`).
+Credentials are always developer configuration and never reach the model. Effort is optional and creation is never retried (see [Cost and safety](#cost-and-safety)).
+
+A run is addressed by the **pair** `{ runId, agentId }` that `nimbleAgentStartRun` returns. Both halves matter: for a generated run, the returned `agentId` is the only way to reach it afterwards.
 
 ### Start now, answer later
 
@@ -144,16 +146,16 @@ const first = await generateText({
   tools: { startResearch: nimbleAgentStartRun() },
   stopWhen: stepCountIs(2),
 });
-// → the tool output contains { runId: 'task_run_…', status: 'queued', … }
+// → the tool output contains { runId: 'task_run_…', agentId: 'wsa_…', status: 'queued', … }
 ```
 
-Minutes later — **a different request, server, or process**; only the `runId` crosses over:
+Minutes later — **a different request, server, or process**; only the `{ runId, agentId }` pair crosses over:
 
 ```ts
-// Request 2 — resumes from nothing but the configured agent + the runId.
+// Request 2 — resumes from nothing but that pair. No agent configuration needed.
 const second = await generateText({
   model: 'openai/gpt-4o-mini',
-  prompt: `The user is back. Fetch research run ${runId} and answer with citations.`,
+  prompt: `The user is back. Fetch research run ${runId} on agent ${agentId} and answer with citations.`,
   tools: { getResearchResult: nimbleAgentRunResult() },
   stopWhen: stepCountIs(2),
 });
@@ -163,16 +165,40 @@ If the run is still working, `nimbleAgentRunResult` returns `{ ready: false, sta
 
 See [`examples/agent-research.ts`](examples/agent-research.ts) for the full flow, including resuming from a separate process (`--start-only` / `--resume`).
 
-### Effort and latency
+### Cost and safety
 
-`effort` trades cost and time for depth: `low` → `medium` → `high` → `x-high` → `max`. As a rough guide, `medium` runs take a few minutes and consult several sources; higher tiers research longer and wider. `low` is a fast, shallow tier — for source-cited research, prefer `medium` or above. The developer can pin a default (`effort`) and cap what the model may request (`effortCap`, default `high`); an unset default uses the agent instance's own configured effort.
+Two deliberate, non-configurable guarantees:
+
+- **Effort is optional.** When omitted, the selected agent or template default applies (the documented product default is `high`, while template defaults vary). Explicit choices are `low`, `medium`, `high`, `x-high`, and `max`. Max is a custom-budget tier: selecting it stops before run creation with guidance to [contact Nimble](https://www.nimbleway.com/contact); it is never silently downgraded.
+- **Run creation is never retried.** Creating a run is billable, non-idempotent, and has no idempotency key, so a "transient" failure that actually reached the server would start (and bill) a second run. Both create routes pass `maxRetries: 0` per request, which also overrides the SDK's default of 2 on an injected client. Read-only status/result calls keep the SDK's normal retry behavior.
+
+Runs still take minutes; the split lifecycle is what keeps that off your request path.
+
+### Structured runs: schemas, records, and sources
+
+Beyond `task`, a run accepts the published per-run controls — usable for research, enrichment, and dataset building alike. Each can be pinned by the developer and/or chosen by the model (a model-supplied value wins):
+
+| Control | Sent as | Use it for |
+|---|---|---|
+| `outputSchema` | `output_schema` | A JSON Schema for a structured answer instead of prose. |
+| `inputData` | `input_data` | Existing records to enrich — one object or a list, mirroring `outputSchema`. |
+| `sources` | `sources` | Per-run `allow` / `block` domain groups and free-text `prioritize` / `avoid` guidance. |
+
+```ts
+nimbleAgentStartRun({
+  outputSchema: { type: 'object', properties: { headquarters: { type: 'string' } } },
+  sources: { allow: [{ title: 'Regulators', domains: ['sec.gov', 'europa.eu'] }] },
+});
+```
+
+Per-run `skill`, `use_case`, and `agent_name` are **not** sent: they are agent-creation metadata on the current API, not run fields.
 
 ### Bounded waiting (optional)
 
 By default the result tool **never blocks**. If you want a single tool call to ride out short remainders (e.g. behind a queue worker rather than a chat route), opt in:
 
 ```ts
-nimbleAgentRunResult({ wait: { timeoutMs: 120_000, pollIntervalMs: 2_000 } })
+nimbleAgentRunResult({ wait: { timeoutMs: 120_000, pollIntervalMs: 10_000 } })
 ```
 
 The wait polls the status endpoint, honors the AI SDK's per-call `AbortSignal` (aborting stops the *wait* — the run keeps going server-side and stays resumable), and on timeout returns `{ ready: false }` with the run still healthy. There is no unbounded polling anywhere in the package.
@@ -212,7 +238,7 @@ All three agent factories share this config (all fields optional):
 
 | Option | Type | Default | Notes |
 |---|---|---|---|
-| `agentId` | `string` | `process.env.NIMBLE_AGENT_ID` | The `wsa_…` research agent instance to run. |
+| `agentId` | `string` | `process.env.NIMBLE_AGENT_ID` | Optional `wsa_…` agent instance. Unset → runs use the generated-agent route. On the status/result tools it only constrains which agent the caller-supplied pair may name. |
 | `apiKey` | `string` | `process.env.NIMBLE_API_KEY` | Nimble API key (server-side). |
 | `client` | `NimbleAgentRunsClient` | — | Inject a pre-built/mock client. |
 | `clientOptions` | `NimbleClientOptions` | — | `baseURL` / `fetch` / `timeout` / `maxRetries` passthrough. |
@@ -221,16 +247,17 @@ All three agent factories share this config (all fields optional):
 
 | Option | Type | Default | Notes |
 |---|---|---|---|
-| `effort` | `'low' \| 'medium' \| 'high' \| 'x-high' \| 'max'` | agent's own default | Used when the model doesn't choose one. |
-| `effortCap` | same enum | `'high'` | Clamps the **model's** effort choice; never limits `effort`. |
+| `outputSchema` | `Record<string, unknown>` | — | Default JSON Schema for the answer; the model may override it. |
+| `inputData` | `object \| object[]` | — | Default records to enrich; the model may override them. |
+| `sources` | `NimbleAgentSourcesInput` | — | Default per-run source guidance; the model may override it. |
 
 `nimbleAgentRunResult(config)` adds:
 
 | Option | Type | Default | Notes |
 |---|---|---|---|
-| `wait` | `boolean \| { timeoutMs?, pollIntervalMs? }` | off | Bounded polling before answering; off = never blocks. Defaults `300_000` / `2_000` (floor 100). |
+| `wait` | `boolean \| { timeoutMs?, pollIntervalMs? }` | off | Bounded polling before answering; off = never blocks. Defaults `300_000` / `10_000`. Shorter intervals are test-only overrides (floor 100). |
 
-The **model-facing inputs** are `{ task: string, effort?: … }` (start) and `{ runId: string }` (status/result) — the agent identity, credentials, and wait policy are never model-controlled.
+The **model-facing inputs** are `{ task, effort?: 'low' | 'medium' | 'high' | 'x-high' | 'max', outputSchema?, inputData?, sources? }` (start) and `{ runId, agentId }` (status/result) — credentials and wait policy are never model-controlled, and the lifecycle `agentId` is the handle the start tool returned, not a free choice: if a `agentId` is also configured, a pair naming a different agent is rejected rather than silently redirected.
 
 ## Output shape
 
@@ -273,7 +300,7 @@ The **model-facing inputs** are `{ task: string, effort?: … }` (start) and `{ 
   agentId: string;
   interactionId: string;
   status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
-  effort: 'low' | 'medium' | 'high' | 'x-high' | 'max';
+  effort: 'low' | 'medium' | 'high' | 'x-high' | 'max'; // reported value
   createdAt: string;
 }
 ```
@@ -313,7 +340,7 @@ The **model-facing inputs** are `{ task: string, effort?: … }` (start) and `{ 
 - **Search + Extract + Agent runs.** Map / Crawl are follow-ups.
 - **No answer generation in Search.** `include_answer` is intentionally not exposed.
 - **`searchDepth: 'fast'` is not available** in this package.
-- **Agent runs need a pre-created agent instance** (`NIMBLE_AGENT_ID`); agent creation/management is deliberately not a model-callable tool. Run event streaming (SSE) is not exposed yet.
+- **Agent effort follows the API contract** (see [Cost and safety](#cost-and-safety)): omitted effort preserves the agent/template default, and generally available tiers can be selected explicitly. Agent creation/management is deliberately not a model-callable tool, and per-run `enable_events` / `previous_interaction_id` are not exposed yet (nor is run event streaming over SSE).
 - **Runtime:** targets the **Node.js runtime** (Node ≥ 18). Edge/serverless is expected to work but not yet verified — prefer the Node runtime.
 
 ## Troubleshooting
@@ -321,7 +348,7 @@ The **model-facing inputs** are `{ task: string, effort?: … }` (start) and `{ 
 | Symptom | Fix |
 |---|---|
 | `NimbleConfigError: missing API key` | Set `NIMBLE_API_KEY` or pass `apiKey`. |
-| `NimbleConfigError: missing Nimble agent id` | Set `NIMBLE_AGENT_ID` or pass `agentId` to the agent factories. |
+| `NimbleAgentRunError` with `reason: 'protocol'` about agent identity | The `{ runId, agentId }` pair doesn't match the configured agent, or the API returned a payload for a different run/agent. Pass the pair exactly as `nimbleAgentStartRun` returned it. |
 | `NimbleExtractError` with a status | The Nimble Extract API returned an error; the HTTP status is on `err.status`. |
 | `NimbleSearchError` with a status | The Nimble API returned an error; the HTTP status is on `err.status`. |
 | `NimbleAgentRunError` | Check `err.reason` (`failed` / `cancelled` / `protocol` / `request`) and `err.runId`; HTTP status (when any) is on `err.status`. |
