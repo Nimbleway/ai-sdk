@@ -2,7 +2,6 @@ import { Container } from "@cloudflare/containers";
 import { DurableObject } from "cloudflare:workers";
 import {
   AdminAuthState,
-  adminEmail,
   authenticate,
   type AuthEnv,
 } from "../../../cloudflare/src/auth";
@@ -72,13 +71,7 @@ export default {
 
     const auth = await authenticate(request, env);
     if (auth instanceof Response) return auth;
-    const configuredAdmin = adminEmail(env);
-    if (auth.email !== configuredAdmin) {
-      return new Response("Forbidden.", {
-        status: 403,
-        headers: { "cache-control": "no-store" },
-      });
-    }
+    const principal = auth.email;
 
     const url = new URL(request.url);
     if (request.method === "POST" && url.pathname === "/api/chat") {
@@ -90,7 +83,7 @@ export default {
         );
       }
       const admission = env.CHAT_ADMISSION.getByName(
-        `${configuredAdmin}\n${requestId}`,
+        `${principal}\n${requestId}`,
       );
       if (!(await admission.admit())) {
         return Response.json(
@@ -106,7 +99,7 @@ export default {
       protectedUpstreamRequest(
         request,
         env.PLAYGROUND_GATEWAY_SECRET,
-        configuredAdmin,
+        principal,
       ),
     );
   },

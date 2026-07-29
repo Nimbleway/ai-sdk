@@ -37,14 +37,21 @@ describe("protected model-chat upstream boundary", () => {
     expect(request.headers.get(ORIGIN_AUTH_HEADER)).toBe("origin-secret");
   });
 
-  it("preserves the existing Worker and auth migration, adding only the container", () => {
+  it("preserves the existing Worker migrations and enables three auth lanes", () => {
     const config = JSON.parse(
       readFileSync(new URL("../wrangler.jsonc", import.meta.url), "utf8"),
     ) as {
       name: string;
+      vars: Record<string, string>;
       migrations: Array<{ tag: string; new_sqlite_classes: string[] }>;
     };
     expect(config.name).toBe("vercel-ai-sdk-nimble-v2-playground");
+    expect(config.vars).toMatchObject({
+      AUTH_ADMIN_ONLY: "false",
+      AUTH_RP_ID: "vercel-ai-sdk-nimble-v2-playground.kadosh.workers.dev",
+      AGENT_AUTH_KEY_ID: "e1720965dfcdfb07992ce256",
+      AGENT_AUTH_WORKSPACE_ID: "vercel-ai-sdk-nimble-v2-playground",
+    });
     expect(config.migrations).toEqual([
       { tag: "v1", new_sqlite_classes: ["AdminAuthState"] },
       { tag: "v2", new_sqlite_classes: ["ModelChatContainer"] },

@@ -5,8 +5,17 @@
   "compatibility_date": "2026-07-29",
   "compatibility_flags": ["nodejs_compat"],
   "vars": {
-    "AUTH_ADMIN_ONLY": "true"
+    "AUTH_ADMIN_ONLY": "false",
+    "AUTH_RP_ID": "vercel-ai-sdk-nimble-v2-playground.kadosh.workers.dev",
+    "AGENT_AUTH_KEY_ID": "e1720965dfcdfb07992ce256",
+    "AGENT_AUTH_WORKSPACE_ID": "vercel-ai-sdk-nimble-v2-playground"
   },
+  "send_email": [
+    {
+      "name": "AUTH_EMAIL",
+      "allowed_sender_addresses": ["login@auth.kadosh.dev"]
+    }
+  ],
   "containers": [
     {
       "class_name": "ModelChatContainer",
