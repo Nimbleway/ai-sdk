@@ -456,9 +456,12 @@ export function nimbleAgentStartRun(config: NimbleAgentStartRunConfig = {}) {
       'different conversation turn or process.',
     inputSchema: nimbleAgentStartRunInputSchema,
     execute: async (input, options): Promise<NimbleAgentStartRunOutput> => {
+      // A configured effort PINS the tier: it bounds cost, so it wins over the
+      // model's choice rather than deferring to it like the other controls.
+      const effort = config.effort ?? input.effort;
       // Recognize the promotional tier, but stop before credentials or the
       // non-idempotent create until custom-budget access is configured.
-      if (input.effort === 'max') {
+      if (effort === 'max') {
         throw new NimbleConfigError(MAX_EFFORT_GUIDANCE);
       }
       const { client, agentId } = resolveAgentContext(config, 'nimbleAgentStartRun');
@@ -472,7 +475,7 @@ export function nimbleAgentStartRun(config: NimbleAgentStartRunConfig = {}) {
       const agentName = input.agentName ?? config.agentName;
       const body: NimbleAgentRunCreateBody = {
         input: input.task,
-        ...(input.effort ? { effort: input.effort } : {}),
+        ...(effort ? { effort } : {}),
         ...(outputSchema ? { output_schema: outputSchema } : {}),
         ...(inputData ? { input_data: inputData } : {}),
         ...(sources ? { sources } : {}),
@@ -493,6 +496,17 @@ export function nimbleAgentStartRun(config: NimbleAgentStartRunConfig = {}) {
       // The run's own `web_search_agent_id` is the authority — for a generated
       // run it is the only id that can address it afterwards.
       const owner = runOwner(run);
+      // A persistent-agent create must come back owned by the agent we asked
+      // for. A different owner means the run is not the one we requested, and
+      // silently adopting it would hand back a pair pointing at someone else's
+      // agent — the same substitution the lifecycle tools already reject.
+      if (agentId && owner !== agentId) {
+        throw new NimbleAgentRunError(
+          `Nimble agent run ${run.id} was created under agent ${owner}, not the ` +
+            `requested agent ${agentId}.`,
+          { reason: 'protocol', runId: run.id, agentId, runStatus: run.status },
+        );
+      }
       assertKnownStatus(run, { runId: run.id, agentId: owner });
       return toStartOutput(run);
     },

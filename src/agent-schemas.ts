@@ -215,6 +215,14 @@ export interface NimbleAgentStartRunConfig extends NimbleAgentToolConfig {
    */
   sources?: NimbleAgentSourcesInput;
   /**
+   * Pin the run's effort tier. Unlike the other controls — where a
+   * model-supplied value wins — this one **overrides** the model's choice,
+   * because it exists to bound cost: a host that pins `low` must not be
+   * talked into a more expensive tier by the model. Leave unset to let the
+   * model choose, or to fall through to the agent/template default.
+   */
+  effort?: NimbleAgentEffort;
+  /**
    * Default one-time operating-context override, used when the model does not
    * supply `skill`. Sent as the run's `skill`.
    */
