@@ -183,6 +183,9 @@ Beyond `task`, a run accepts the published per-run controls — usable for resea
 | `outputSchema` | `output_schema` | A JSON Schema for a structured answer instead of prose. |
 | `inputData` | `input_data` | Existing records to enrich — one object or a list, mirroring `outputSchema`. |
 | `sources` | `sources` | Per-run `allow` / `block` domain groups and free-text `prioritize` / `avoid` guidance. |
+| `skill` | `skill` | A one-time operating-context override for this run. |
+| `useCase` | `use_case` | Route the run: `research`, `enrichment`, or `dataset_building`. With an existing agent it must match that agent's configured use case. |
+| `agentName` | `agent_name` | A stable name for the agent the run uses — most useful on the generated-agent route, where it names the agent Nimble creates. |
 
 ```ts
 nimbleAgentStartRun({
@@ -191,7 +194,7 @@ nimbleAgentStartRun({
 });
 ```
 
-Per-run `skill`, `use_case`, and `agent_name` are **not** sent: they are agent-creation metadata on the current API, not run fields.
+Every one of these is published on both create routes by `@nimble-way/nimble-js` 1.2, and the package's compile-time SDK contract fails the build if this package ever declares a body field the SDK does not publish.
 
 ### Bounded waiting (optional)
 
