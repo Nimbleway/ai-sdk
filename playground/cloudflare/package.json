@@ -4,20 +4,22 @@
   "type": "module",
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "vitest run",
+    "test": "vitest run && vitest run --config vitest.node.config.ts",
     "dev": "wrangler dev",
     "deploy:dry": "wrangler deploy --dry-run"
   },
   "dependencies": {
     "@nimble-way/ai-sdk": "file:../..",
+    "@simplewebauthn/server": "^13.0.0",
     "ai": "^6.0.0",
-    "zod": "^3.25.76",
-    "@simplewebauthn/server": "^13.0.0"
+    "zod": "^3.25.76"
   },
   "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.18.8",
     "@cloudflare/workers-types": "^5.20260722.1",
+    "@types/node": "^22.20.1",
     "typescript": "^5.6.0",
-    "vitest": "^2.1.0",
+    "vitest": "^4.1.10",
     "wrangler": "4.114.0"
   }
 }

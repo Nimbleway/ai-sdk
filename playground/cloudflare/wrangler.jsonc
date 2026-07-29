@@ -4,6 +4,18 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-07-28",
   "compatibility_flags": ["nodejs_compat"],
+  "vars": {
+    "AUTH_ADMIN_ONLY": "false",
+    "AUTH_RP_ID": "vercel-ai-sdk-nimble-v2-playground.kadosh.workers.dev",
+    "AGENT_AUTH_KEY_ID": "e1720965dfcdfb07992ce256",
+    "AGENT_AUTH_WORKSPACE_ID": "vercel-ai-sdk-nimble-v2-playground"
+  },
+  "send_email": [
+    {
+      "name": "AUTH_EMAIL",
+      "allowed_sender_addresses": ["login@auth.kadosh.dev"]
+    }
+  ],
   "durable_objects": {
     "bindings": [
       { "name": "ADMIN_AUTH", "class_name": "AdminAuthState" }
@@ -19,4 +31,33 @@
     "run_worker_first": true
   },
   "observability": { "enabled": true }
+  ,
+  "env": {
+    "test": {
+      "durable_objects": {
+        "bindings": [
+          { "name": "ADMIN_AUTH", "class_name": "AdminAuthState" }
+        ]
+      },
+      "migrations": [
+        { "tag": "v1", "new_sqlite_classes": ["AdminAuthState"] }
+      ],
+      "vars": {
+        "AUTH_ADMIN_ONLY": "false",
+        "AUTH_RP_ID": "vercel-ai-sdk-nimble-v2-playground.kadosh.workers.dev",
+        "AGENT_AUTH_KEY_ID": "e1720965dfcdfb07992ce256",
+        "AGENT_AUTH_PUBLIC_KEY": "BDC4xPgSDYnE0g9_BTJxpBVlZnibIc1o23SKBJ5KVdzmLO8MkK-nqT4JGFhClbivSpmqcvOTC_WfxCsidPgKiD8",
+        "AGENT_AUTH_WORKSPACE_ID": "vercel-ai-sdk-nimble-v2-playground",
+        "ADMIN_EMAIL": "admin@example.test",
+        "ADMIN_PASSKEY": "test-bootstrap-not-a-real-secret",
+        "ADMIN_SESSION_SECRET": "test-session-secret-not-real"
+      },
+      "send_email": [
+        {
+          "name": "AUTH_EMAIL",
+          "allowed_sender_addresses": ["login@auth.kadosh.dev"]
+        }
+      ]
+    }
+  }
 }

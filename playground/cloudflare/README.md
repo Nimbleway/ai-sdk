@@ -9,13 +9,32 @@ polls status every 10 seconds and renders the final output and trust metadata.
 The reusable `@nimble-way/ai-sdk` library retains its full documented effort
 contract; only this protected live UI and action boundary are low-only.
 
-The edge gateway authenticates a single administrator with a WebAuthn passkey
+The edge gateway authenticates the administrator with a WebAuthn passkey
 before serving assets or `/api/*`. It uses a signed
 `Secure; HttpOnly; SameSite=Strict` session and CSRF protection. Configure
 `ADMIN_EMAIL`, `ADMIN_PASSKEY`, `ADMIN_SESSION_SECRET`, and `NIMBLE_API_KEY`
 as Worker secrets — the authorized identity is configuration, never hard-coded,
 so this deploys as-is for whoever owns the Worker. The password field is an
 ephemeral per-session key override and is never persisted.
+
+Employee six-digit OTP and single-use magic-link access is implemented and
+restricted to exact `@nimbleway.com` addresses. This reviewed configuration
+sets `AUTH_ADMIN_ONLY=false`; changing it to `true` hides the employee routes
+and invalidates existing employee sessions. The `AUTH_EMAIL` binding is restricted to the configured
+`login@auth.kadosh.dev` sender. The passkey
+ceremony has been locally exercised through registration-options generation,
+but still requires a real browser authenticator and deployed-origin
+verification before release.
+
+The third lane is a separate audience-bound local-agent principal. It uses a
+60-second canonical challenge authenticated by the per-environment session
+secret, a non-exportable P-256 signature, atomic nonce replay rejection, a
+one-use fragment activation, and a 15-minute `HttpOnly; Secure;
+SameSite=Strict` session. Configure `AGENT_AUTH_PUBLIC_KEY` as a Worker secret;
+the non-secret key ID, workspace ID, and exact RP hostname are pinned in
+`wrangler.jsonc`. The generated identity is bound to this release worktree and
+Worker origin. This Mac reported `keychain-nonextractable` rather than Secure
+Enclave, so the documented same-user local trust boundary still applies.
 
 Everything the Worker needs lives in `src/`, including `src/auth.ts`; there are
 no imports from outside this directory, so `wrangler deploy --dry-run` bundles

@@ -59,7 +59,12 @@ export default {
     if (auth instanceof Response) return auth;
     const trustedHeaders = new Headers(request.headers);
     trustedHeaders.delete("authorization");
+    trustedHeaders.delete("x-playground-auth-email");
+    trustedHeaders.delete("x-playground-auth-role");
+    trustedHeaders.delete("x-playground-auth-key-id");
     trustedHeaders.set("x-playground-auth-email", auth.email);
+    trustedHeaders.set("x-playground-auth-role", auth.role);
+    if (auth.keyId) trustedHeaders.set("x-playground-auth-key-id", auth.keyId);
     request = new Request(request, { headers: trustedHeaders });
 
     if (url.pathname === "/healthz") {
@@ -78,14 +83,12 @@ export default {
       return json(BUILD_MANIFEST);
     }
 
-    // The passkey gateway above already authenticated the single configured
-    // administrator and rewrote the trusted identity header; this re-checks it
-    // against the same configured value rather than a hard-coded address.
+    // The gateway above has authenticated one of the three independent
+    // principals and overwritten all trusted identity headers.
     if (url.pathname.startsWith("/api/")) {
-      if (
-        !env.ADMIN_EMAIL ||
-        request.headers.get("x-playground-auth-email") !== env.ADMIN_EMAIL.trim()
-      ) {
+      if (!["admin", "employee", "agent"].includes(
+        request.headers.get("x-playground-auth-role") || "",
+      )) {
         return json({ error: "unauthorized" }, 401);
       }
       if (request.method !== "POST") return json({ error: "method not allowed" }, 405);
