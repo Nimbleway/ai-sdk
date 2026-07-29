@@ -6,7 +6,6 @@ import {
   nimbleAgentStartRunInputSchema,
 } from './agent-schemas';
 import type {
-  NimbleAgentEffort,
   NimbleAgentOutput,
   NimbleAgentRawFailedResult,
   NimbleAgentRawResult,
@@ -28,34 +27,33 @@ import type {
 import { NimbleAgentRunError, NimbleConfigError } from './errors';
 
 /**
- * Agent tool defaults. `effortCap` bounds only the *model's* effort choice;
- * the wait values apply when {@link NimbleAgentRunResultConfig.wait} is
- * enabled (it is off by default — the result tool never blocks unless asked).
+ * Agent tool defaults. Effort intentionally has no package default: omitting
+ * it preserves the selected agent/template default. The wait values apply when
+ * {@link NimbleAgentRunResultConfig.wait} is enabled (it is off by default —
+ * the result tool never blocks unless asked).
  */
 export const NIMBLE_AGENT_DEFAULTS = {
-  effortCap: 'high',
   waitTimeoutMs: 300_000,
-  pollIntervalMs: 2_000,
+  pollIntervalMs: 10_000,
   minPollIntervalMs: 100,
+  /**
+   * Retries for a run-create request. Zero: creating a run is billable and
+   * non-idempotent, and the API exposes no idempotency key, so a "transient"
+   * failure that actually reached the server would bill (and start) a second
+   * run. Reads (status/result) keep the SDK's own retry budget.
+   */
+  createMaxRetries: 0,
 } as const;
 
-const EFFORT_ORDER: Record<NimbleAgentEffort, number> = {
-  low: 0,
-  medium: 1,
-  high: 2,
-  'x-high': 3,
-  max: 4,
-};
+const MAX_EFFORT_GUIDANCE =
+  'Nimble Max effort is available with a custom budget. ' +
+  'Contact Nimble to enable it: https://www.nimbleway.com/contact';
 
 // Derived from the canonical const array so a drift between the type and the
 // runtime guard cannot compile.
 const LIFECYCLE_STATUSES: ReadonlySet<NimbleAgentRunLifecycleStatus> = new Set(
   NIMBLE_AGENT_RUN_STATUSES,
 );
-
-function capEffort(requested: NimbleAgentEffort, cap: NimbleAgentEffort): NimbleAgentEffort {
-  return EFFORT_ORDER[requested] > EFFORT_ORDER[cap] ? cap : requested;
-}
 
 function readStatus(err: unknown): number | undefined {
   if (typeof err === 'object' && err !== null && 'status' in err) {
@@ -127,17 +125,13 @@ function terminalFailure(
 
 interface AgentContext {
   client: NimbleAgentRunsClient;
-  agentId: string;
+  /** Undefined when no agent is configured — the generated-agent route. */
+  agentId: string | undefined;
 }
 
 function resolveAgentContext(config: NimbleAgentToolConfig, factory: string): AgentContext {
-  const agentId = config.agentId ?? process.env.NIMBLE_AGENT_ID;
-  if (!agentId) {
-    throw new NimbleConfigError(
-      `Missing Nimble agent id: set NIMBLE_AGENT_ID or pass { agentId } to ${factory}(). ` +
-        'Create an agent instance once via the Nimble console or POST /v2/agents.',
-    );
-  }
+  // Empty-string env vars are "unset", not an agent named "".
+  const agentId = config.agentId || process.env.NIMBLE_AGENT_ID || undefined;
   if (config.client) return { client: config.client, agentId };
   const apiKey = config.apiKey ?? process.env.NIMBLE_API_KEY;
   if (!apiKey) {
@@ -149,8 +143,49 @@ function resolveAgentContext(config: NimbleAgentToolConfig, factory: string): Ag
   return { client, agentId };
 }
 
+/**
+ * Resolve the agent a lifecycle (status/result) call addresses.
+ *
+ * The caller-supplied `{ runId, agentId }` pair is authoritative: for a
+ * generated run it is the *only* way to reach the run. A configured agent id
+ * is treated as a constraint, not a substitute — a pair naming a different
+ * owner is rejected rather than silently redirected to the configured agent
+ * (which would query a run that does not belong to it).
+ */
+function resolveLifecycleAgentId(
+  config: NimbleAgentToolConfig,
+  input: { runId: string; agentId: string },
+): string {
+  const configured = config.agentId || process.env.NIMBLE_AGENT_ID || undefined;
+  if (configured && configured !== input.agentId) {
+    throw new NimbleAgentRunError(
+      `Nimble agent run ${input.runId} was addressed with agent ${input.agentId}, ` +
+        `which is not the configured agent ${configured}.`,
+      {
+        reason: 'protocol',
+        runId: input.runId,
+        agentId: input.agentId,
+      },
+    );
+  }
+  return input.agentId;
+}
+
 function requestOptions(signal: AbortSignal | undefined): NimbleAgentRequestOptions | undefined {
   return signal ? { signal } : undefined;
+}
+
+/**
+ * Options for a run-create call: abort propagation plus the explicit
+ * single-shot retry budget. Passed on *both* create routes, so a
+ * package-constructed client (SDK default `maxRetries: 2`) and an injected
+ * client alike are prevented from silently starting a second billable run.
+ */
+function createRequestOptions(signal: AbortSignal | undefined): NimbleAgentRequestOptions {
+  return {
+    ...(signal ? { signal } : {}),
+    maxRetries: NIMBLE_AGENT_DEFAULTS.createMaxRetries,
+  };
 }
 
 function assertKnownStatus(
@@ -170,28 +205,99 @@ function assertKnownStatus(
   }
 }
 
-function baseFields(run: NimbleAgentRawRun, agentId: string) {
+/** A required identity field: present, a string, and non-empty. */
+function identity(value: unknown): string | undefined {
+  return typeof value === 'string' && value !== '' ? value : undefined;
+}
+
+/**
+ * The agent that owns a freshly created run, taken from the run itself.
+ *
+ * `web_search_agent_id` is a required property of the create response on both
+ * routes, and on the generated-agent route it names an agent the caller has
+ * never seen — it is the *only* id that can address the run afterwards. A
+ * response without it is therefore not merely incomplete: the run it started
+ * (and billed) is unresumable, and there is nothing safe to substitute. A
+ * configured agent id is not a valid stand-in — on the generated route it
+ * would name the wrong agent entirely. So a missing owner is a typed protocol
+ * error, exactly like a mismatched one.
+ */
+function runOwner(run: NimbleAgentRawRun): string {
+  const owner = identity(run.web_search_agent_id);
+  const runId = identity(run.id);
+  if (!runId) {
+    throw new NimbleAgentRunError(
+      'Nimble agent run was created without a run id, so it cannot be resumed.',
+      { reason: 'protocol', runStatus: run.status },
+    );
+  }
+  if (!owner) {
+    throw new NimbleAgentRunError(
+      `Nimble agent run ${runId} was created without an owning agent id, so it cannot be resumed.`,
+      { reason: 'protocol', runId, runStatus: run.status },
+    );
+  }
+  return owner;
+}
+
+/**
+ * Assert a run object the server sent back is exactly the run we asked about,
+ * under exactly the agent we asked about.
+ *
+ * A payload for a different run — or for the same run under a different agent
+ * — must never be accepted: its status and output would be attributed to the
+ * requested run. Both ids are required by the API contract, so an absent or
+ * empty one is treated the same as a wrong one: with no verifiable identity,
+ * the payload cannot be shown to belong to this run, and guessing is the
+ * failure mode this check exists to prevent.
+ */
+function assertRunIdentity(
+  run: Partial<NimbleAgentRawRun>,
+  ids: { runId: string; agentId: string },
+): void {
+  const runId = identity(run.id);
+  if (runId !== ids.runId) {
+    throw new NimbleAgentRunError(
+      `Nimble agent run ${ids.runId} returned a payload for a different run ` +
+        `(${runId ?? 'no run id'}).`,
+      { reason: 'protocol', runId: ids.runId, agentId: ids.agentId },
+    );
+  }
+  const owner = identity(run.web_search_agent_id);
+  if (owner !== ids.agentId) {
+    throw new NimbleAgentRunError(
+      `Nimble agent run ${ids.runId} reported owner ${owner ?? 'no agent id'}, not the ` +
+        `requested agent ${ids.agentId}.`,
+      { reason: 'protocol', runId: ids.runId, agentId: ids.agentId },
+    );
+  }
+}
+
+/**
+ * Identity fields are read straight off the run: every path that reaches here
+ * has already proved them present and correct (runOwner / assertRunIdentity),
+ * so there is no fallback left to get wrong.
+ */
+function baseFields(run: NimbleAgentRawRun) {
   return {
     runId: run.id,
-    // Deliberately truthy (not `??`): an out-of-contract empty string from the
-    // server should also fall back to the configured agent id.
-    agentId: run.web_search_agent_id || agentId,
+    agentId: run.web_search_agent_id,
     effort: run.effort,
     createdAt: run.created_at,
   };
 }
 
-function toStartOutput(run: NimbleAgentRawRun, agentId: string): NimbleAgentStartRunOutput {
+function toStartOutput(run: NimbleAgentRawRun): NimbleAgentStartRunOutput {
   return {
-    ...baseFields(run, agentId),
+    ...baseFields(run),
     interactionId: run.interaction_id,
     status: run.status,
   };
 }
 
-function toStatusOutput(run: NimbleAgentRawRun, agentId: string): NimbleAgentRunStatusOutput {
+function toStatusOutput(run: NimbleAgentRawRun): NimbleAgentRunStatusOutput {
   return {
-    ...baseFields(run, agentId),
+    ...baseFields(run),
     status: run.status,
     isActive: run.is_active,
     ...(run.started_at ? { startedAt: run.started_at } : {}),
@@ -202,12 +308,11 @@ function toStatusOutput(run: NimbleAgentRawRun, agentId: string): NimbleAgentRun
 
 function toPendingOutput(
   run: NimbleAgentRawRun,
-  agentId: string,
   status: 'queued' | 'running',
 ): NimbleAgentRunPendingOutput {
   return {
     ready: false,
-    ...baseFields(run, agentId),
+    ...baseFields(run),
     status,
     isActive: true,
     ...(run.started_at ? { startedAt: run.started_at } : {}),
@@ -253,7 +358,7 @@ function toCompletedOutput(
   const run = result.run;
   return {
     ready: true,
-    ...baseFields(run, agentId),
+    ...baseFields(run),
     status: 'completed',
     ...(run.started_at ? { startedAt: run.started_at } : {}),
     ...(run.completed_at ? { completedAt: run.completed_at } : {}),
@@ -309,14 +414,21 @@ function normalizeWait(
 }
 
 /**
- * Create a Vercel AI SDK tool that starts a Nimble deep-research agent run
- * (`@nimble-way/nimble-js` → `POST /v2/agents/{agent_id}/runs`) and returns
- * immediately with the real `task_run_…` ID.
+ * Create a Vercel AI SDK tool that starts a Nimble deep-research agent run and
+ * returns immediately with the real `task_run_…` ID and the agent that owns it.
  *
- * The research runs asynchronously on Nimble's side (typically minutes at
- * `medium`+ effort) — a chat request is never blocked for the run's duration.
- * Pair with {@link nimbleAgentRunStatus} / {@link nimbleAgentRunResult} to
- * collect the answer later, from the same or a completely different process.
+ * The agent is optional. With one configured the run goes to that instance
+ * (`POST /v2/agents/{agent_id}/runs`); without one Nimble generates a minimal
+ * agent for the run (`POST /v2/agents/runs`) and returns its id. Either way
+ * exactly one create request is made — never retried, because creating a run
+ * is billable and has no idempotency key. Effort is omitted unless the caller
+ * supplies an explicit generally available override.
+ *
+ * The research runs asynchronously on Nimble's side (minutes) — a chat request
+ * is never blocked for the run's duration. Pass the returned
+ * `{ runId, agentId }` pair to {@link nimbleAgentRunStatus} /
+ * {@link nimbleAgentRunResult} to collect the answer later, from the same or a
+ * completely different process.
  *
  * @example
  * ```ts
@@ -327,41 +439,58 @@ function normalizeWait(
  *   model: 'anthropic/claude-sonnet-4.6',
  *   prompt: 'Kick off deep research on the EU AI Act enforcement timeline.',
  *   tools: {
- *     startResearch: nimbleAgentStartRun({ agentId: process.env.NIMBLE_AGENT_ID }),
- *     getResearchResult: nimbleAgentRunResult({ agentId: process.env.NIMBLE_AGENT_ID }),
+ *     // No agentId: Nimble generates the agent and returns its id.
+ *     startResearch: nimbleAgentStartRun(),
+ *     getResearchResult: nimbleAgentRunResult(),
  *   },
  * });
  * ```
  */
 export function nimbleAgentStartRun(config: NimbleAgentStartRunConfig = {}) {
-  const effortCap = config.effortCap ?? NIMBLE_AGENT_DEFAULTS.effortCap;
-
   return tool({
     description:
       'Start a Nimble deep-research agent run for a complex research task. ' +
-      'Returns immediately with a runId while the research (which can take ' +
-      'minutes) continues in the background. Use the run-status or run-result ' +
-      'tool with the returned runId to collect the answer later — even from a ' +
+      'Returns immediately with a runId and agentId while the research (which ' +
+      'can take minutes) continues in the background. Pass BOTH ids to the ' +
+      'run-status or run-result tool to collect the answer later — even from a ' +
       'different conversation turn or process.',
     inputSchema: nimbleAgentStartRunInputSchema,
     execute: async (input, options): Promise<NimbleAgentStartRunOutput> => {
+      // Recognize the promotional tier, but stop before credentials or the
+      // non-idempotent create until custom-budget access is configured.
+      if (input.effort === 'max') {
+        throw new NimbleConfigError(MAX_EFFORT_GUIDANCE);
+      }
       const { client, agentId } = resolveAgentContext(config, 'nimbleAgentStartRun');
       const signal = options?.abortSignal;
 
-      const effort = input.effort ? capEffort(input.effort, effortCap) : config.effort;
+      const outputSchema = input.outputSchema ?? config.outputSchema;
+      const inputData = input.inputData ?? config.inputData;
+      const sources = input.sources ?? config.sources;
       const body: NimbleAgentRunCreateBody = {
         input: input.task,
-        ...(effort ? { effort } : {}),
+        ...(input.effort ? { effort: input.effort } : {}),
+        ...(outputSchema ? { output_schema: outputSchema } : {}),
+        ...(inputData ? { input_data: inputData } : {}),
+        ...(sources ? { sources } : {}),
+        ...(input.skill ? { skill: input.skill } : {}),
+        ...(input.useCase ? { use_case: input.useCase } : {}),
       };
 
       let run: NimbleAgentRawRun;
       try {
-        run = await client.agents.runs.create(agentId, body, requestOptions(signal));
+        // Exactly one create call on either route, with retries disabled.
+        run = agentId
+          ? await client.agents.runs.create(agentId, body, createRequestOptions(signal))
+          : await client.agents.run(body, createRequestOptions(signal));
       } catch (err) {
         throw toAgentError(err, { verb: 'run creation', agentId });
       }
-      assertKnownStatus(run, { runId: run.id, agentId });
-      return toStartOutput(run, agentId);
+      // The run's own `web_search_agent_id` is the authority — for a generated
+      // run it is the only id that can address it afterwards.
+      const owner = runOwner(run);
+      assertKnownStatus(run, { runId: run.id, agentId: owner });
+      return toStartOutput(run);
     },
   });
 }
@@ -369,19 +498,23 @@ export function nimbleAgentStartRun(config: NimbleAgentStartRunConfig = {}) {
 /**
  * Create a Vercel AI SDK tool that reports the current status of a Nimble
  * agent run (`GET /v2/agents/{agent_id}/runs/{run_id}`). Instant and cheap;
- * never waits. Works for any run of the configured agent, including runs
- * started by another process — only the `runId` is needed.
+ * never waits. Works for any run — including generated-agent runs and runs
+ * started by another process — given the `{ runId, agentId }` pair the
+ * start-run tool returned.
  */
 export function nimbleAgentRunStatus(config: NimbleAgentToolConfig = {}) {
   return tool({
     description:
-      'Check the current status of a Nimble deep-research agent run by runId ' +
-      '(queued, running, completed, failed, or cancelled). Instant; never ' +
-      'waits. Use the run-result tool to fetch the finished answer.',
+      'Check the current status of a Nimble deep-research agent run, given the ' +
+      'runId and agentId returned when it was started (queued, running, ' +
+      'completed, failed, or cancelled). Instant; never waits. Use the ' +
+      'run-result tool to fetch the finished answer.',
     inputSchema: nimbleAgentRunIdInputSchema,
     execute: async (input, options): Promise<NimbleAgentRunStatusOutput> => {
-      const { client, agentId } = resolveAgentContext(config, 'nimbleAgentRunStatus');
+      const { client } = resolveAgentContext(config, 'nimbleAgentRunStatus');
+      const agentId = resolveLifecycleAgentId(config, input);
       const signal = options?.abortSignal;
+      const ids = { runId: input.runId, agentId };
 
       let run: NimbleAgentRawRun;
       try {
@@ -391,10 +524,11 @@ export function nimbleAgentRunStatus(config: NimbleAgentToolConfig = {}) {
           requestOptions(signal),
         );
       } catch (err) {
-        throw toAgentError(err, { verb: 'status check', runId: input.runId, agentId });
+        throw toAgentError(err, { verb: 'status check', ...ids });
       }
-      assertKnownStatus(run, { runId: input.runId, agentId });
-      return toStatusOutput(run, agentId);
+      assertRunIdentity(run, ids);
+      assertKnownStatus(run, ids);
+      return toStatusOutput(run);
     },
   });
 }
@@ -417,13 +551,15 @@ export function nimbleAgentRunResult(config: NimbleAgentRunResultConfig = {}) {
 
   return tool({
     description:
-      'Fetch the result of a Nimble deep-research agent run by runId. If the ' +
-      'run is still working, returns { ready: false } — check again later. ' +
-      'When complete, returns the answer (text or structured JSON) with ' +
-      'sources, per-claim citations, and confidence metadata.',
+      'Fetch the result of a Nimble deep-research agent run, given the runId ' +
+      'and agentId returned when it was started. If the run is still working, ' +
+      'returns { ready: false } — check again later. When complete, returns ' +
+      'the answer (text or structured JSON) with sources, per-claim ' +
+      'citations, and confidence metadata.',
     inputSchema: nimbleAgentRunIdInputSchema,
     execute: async (input, options): Promise<NimbleAgentRunResultOutput> => {
-      const { client, agentId } = resolveAgentContext(config, 'nimbleAgentRunResult');
+      const { client } = resolveAgentContext(config, 'nimbleAgentRunResult');
+      const agentId = resolveLifecycleAgentId(config, input);
       const signal = options?.abortSignal;
       const ids = { runId: input.runId, agentId };
 
@@ -440,6 +576,7 @@ export function nimbleAgentRunResult(config: NimbleAgentRunResultConfig = {}) {
       };
 
       let run = await getRun();
+      assertRunIdentity(run, ids);
       assertKnownStatus(run, ids);
 
       if (wait && run.is_active) {
@@ -450,12 +587,13 @@ export function nimbleAgentRunResult(config: NimbleAgentRunResultConfig = {}) {
           if (remaining <= 0) break;
           await sleep(Math.min(wait.pollIntervalMs, remaining), signal);
           run = await getRun();
+          assertRunIdentity(run, ids);
           assertKnownStatus(run, ids);
         }
       }
 
       if (run.status === 'queued' || run.status === 'running') {
-        return toPendingOutput(run, agentId, run.status);
+        return toPendingOutput(run, run.status);
       }
       if (run.status === 'failed' || run.status === 'cancelled') {
         throw terminalFailure(run, ids);
@@ -474,12 +612,17 @@ export function nimbleAgentRunResult(config: NimbleAgentRunResultConfig = {}) {
         // 409: the result endpoint still considers the run active (eventual
         // consistency with the status we just read) — report not-ready.
         if (httpStatus === 409) {
-          return toPendingOutput({ ...run, status: 'running', is_active: true }, agentId, 'running');
+          return toPendingOutput({ ...run, status: 'running', is_active: true }, 'running');
         }
         // 422: terminal failure — the body carries the run + structured error.
         if (httpStatus === 422) {
           const failed = readFailedResultBody(err);
-          if (failed) throw terminalFailure(failed.run, ids, failed.error.message);
+          if (failed) {
+            // Same identity bar as the 200 paths: never report another run's
+            // failure as this run's.
+            assertRunIdentity(failed.run, ids);
+            throw terminalFailure(failed.run, ids, failed.error.message);
+          }
         }
         throw toAgentError(err, { verb: 'result fetch', ...ids });
       }
@@ -491,6 +634,7 @@ export function nimbleAgentRunResult(config: NimbleAgentRunResultConfig = {}) {
         // Failed form: { run, error }. Validate the run before dereferencing
         // so a run-less body maps to 'protocol', not a TypeError.
         if (typeof result.run?.status !== 'string') throw protocolError(ids);
+        assertRunIdentity(result.run, ids);
         throw terminalFailure(result.run, ids, result.error?.message);
       }
       // Re-validate the run object embedded in the result payload rather than
@@ -498,9 +642,12 @@ export function nimbleAgentRunResult(config: NimbleAgentRunResultConfig = {}) {
       // or malformed body must not be stamped `completed` by toCompletedOutput.
       const resultRun = result.run;
       if (typeof resultRun?.status !== 'string') throw protocolError(ids);
+      // …and prove the payload is for THIS run under THIS agent before its
+      // answer and trust metadata are attributed to the requested run.
+      assertRunIdentity(resultRun, ids);
       assertKnownStatus(resultRun, ids);
       if (resultRun.status === 'queued' || resultRun.status === 'running') {
-        return toPendingOutput(resultRun, agentId, resultRun.status);
+        return toPendingOutput(resultRun, resultRun.status);
       }
       if (resultRun.status === 'failed' || resultRun.status === 'cancelled') {
         throw terminalFailure(resultRun, ids);
