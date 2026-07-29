@@ -2,10 +2,14 @@
 # `ai`/`zod` dedupe to a single instance). Only the package is published.
 packages:
   - examples
+  - playground/model-chat
+  - playground/model-chat/cloudflare
 
 # Approve the esbuild build script (a tsup/vitest dependency) under pnpm v10.
 allowBuilds:
   esbuild: true
+  sharp: true
+  workerd: true
 
 # nimble-js 1.2.0 (first release with typed per-run skill/use_case controls)
 # was freshly published at adoption time; the exact resolution is pinned by

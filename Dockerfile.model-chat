@@ -1,0 +1,24 @@
+FROM node:22-slim AS build
+
+ENV PNPM_HOME=/pnpm
+ENV PATH=$PNPM_HOME:$PATH
+ENV CI=true
+WORKDIR /app
+
+RUN corepack enable
+
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc tsconfig.json tsup.config.ts ./
+COPY src ./src
+COPY playground/model-chat ./playground/model-chat
+
+RUN pnpm install --frozen-lockfile \
+    && pnpm --filter @nimble-way/ai-sdk build \
+    && pnpm --filter nimble-agent-v2-model-chat build \
+    && pnpm prune --prod
+
+FROM node:22-slim
+ENV NODE_ENV=production
+WORKDIR /app
+COPY --from=build /app /app
+EXPOSE 3211
+CMD ["node", "playground/model-chat/node_modules/next/dist/bin/next", "start", "playground/model-chat", "--port", "3211", "--hostname", "0.0.0.0"]

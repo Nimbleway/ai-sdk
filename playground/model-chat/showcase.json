@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "integration_slug": "vercel-ai-sdk-nimble-web-search",
+  "framework": "Vercel AI SDK 6",
+  "runtime_command": ["pnpm", "start"],
+  "agent_api_v2": {
+    "enabled": true,
+    "identity_modes": ["auto", "agent_id"],
+    "product_modes": ["research", "enrichment", "dataset_building"],
+    "run_controls": [
+      "input",
+      "agent_name",
+      "effort",
+      "input_data",
+      "output_schema",
+      "sources",
+      "skill",
+      "use_case",
+      "enable_events"
+    ],
+    "allowed_efforts": ["low", "medium", "high", "x-high", "max"],
+    "gated_effort": {
+      "tier": "max",
+      "treatment": "positive_stop_before_create",
+      "engagement_url": "https://www.nimbleway.com/contact",
+      "closest_available": "x-high",
+      "silent_degradation": false
+    },
+    "create_retries": 0,
+    "client_source": "vercel-ai-sdk"
+  },
+  "authentication": {
+    "employee_email_domain": "nimbleway.com",
+    "employee_methods": ["otp", "magic_link"],
+    "admin_method": "webauthn",
+    "backend_default_deny": true,
+    "deployment_access": "admin_only"
+  },
+  "evidence": {
+    "raw_directory": "evidence/raw",
+    "shareable_directory": "evidence/shareable",
+    "requires_live_video": true,
+    "requires_final_output_visible": true
+  }
+}

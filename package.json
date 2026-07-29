@@ -58,6 +58,7 @@
     "zod": "^3.25.76 || ^4.1.8"
   },
   "devDependencies": {
+    "@simplewebauthn/server": "^13.3.2",
     "@types/node": "^22.0.0",
     "ai": "^6.0.0",
     "tsup": "^8.3.0",
@@ -72,5 +73,6 @@
   "publishConfig": {
     "access": "public",
     "provenance": true
-  }
+  },
+  "packageManager": "pnpm@11.1.3"
 }
