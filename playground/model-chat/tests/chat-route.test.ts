@@ -231,6 +231,129 @@ describe('authorized native chat route', () => {
     );
   });
 
+  it('recovers from a locally rejected schema before the single create', async () => {
+    mocks.startFactory.mockImplementation(() => tool({
+      description: 'Start research.',
+      inputSchema: z.object({
+        task: z.string(),
+        outputSchema: z.record(z.string(), z.unknown()).optional(),
+      }),
+      execute: startExecute,
+    }));
+    const finish = (reason: 'tool-calls' | 'stop') => ({
+      type: 'finish' as const,
+      finishReason: { unified: reason, raw: undefined },
+      logprobs: undefined,
+      usage: {
+        inputTokens: {
+          total: 3,
+          noCache: 3,
+          cacheRead: undefined,
+          cacheWrite: undefined,
+        },
+        outputTokens: {
+          total: 8,
+          text: 8,
+          reasoning: undefined,
+        },
+      },
+    });
+    const toolCalls = [
+      {
+        type: 'tool-call' as const,
+        toolCallId: 'tc-start-invalid',
+        toolName: 'startResearch',
+        input: JSON.stringify({
+          task: 'Research objective',
+          outputSchema: { company: 'string' },
+        }),
+      },
+      {
+        type: 'tool-call' as const,
+        toolCallId: 'tc-start-corrected',
+        toolName: 'startResearch',
+        input: JSON.stringify({
+          task: 'Research objective',
+          outputSchema: {
+            type: 'object',
+            properties: { company: { type: 'string' } },
+            required: ['company'],
+          },
+        }),
+      },
+      {
+        type: 'tool-call' as const,
+        toolCallId: 'tc-status',
+        toolName: 'checkResearch',
+        input: JSON.stringify({ runId: 'task_run_1', agentId: 'wsa_1' }),
+      },
+      {
+        type: 'tool-call' as const,
+        toolCallId: 'tc-result',
+        toolName: 'getResearchResult',
+        input: JSON.stringify({ runId: 'task_run_1', agentId: 'wsa_1' }),
+      },
+    ];
+    let turn = 0;
+    model = new MockLanguageModelV3({
+      doStream: async () => {
+        const chunks = turn < toolCalls.length
+          ? [toolCalls[turn], finish('tool-calls')]
+          : [
+              { type: 'text-start' as const, id: 'text-recovered' },
+              {
+                type: 'text-delta' as const,
+                id: 'text-recovered',
+                delta: 'Recovered after local schema validation.',
+              },
+              { type: 'text-end' as const, id: 'text-recovered' },
+              finish('stop'),
+            ];
+        turn += 1;
+        return {
+          stream: simulateReadableStream<never>({ chunks: chunks as never[] }),
+        };
+      },
+    });
+    mocks.resolveModel.mockReturnValue(model);
+
+    const response = await POST(
+      new Request('https://playground.test/api/chat', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          [GATEWAY_HEADER]: gatewayAssertion,
+        },
+        body: JSON.stringify({
+          messages: [{
+            id: 'message-1',
+            role: 'user',
+            parts: [{ type: 'text', text: 'Research the objective.' }],
+          }],
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    const stream = await response.text();
+    expect(stream).toContain('"toolCallId":"tc-start-invalid"');
+    expect(stream).toContain('"type":"tool-output-error"');
+    expect(stream).toContain('Recovered after local schema validation.');
+    expect(startExecute).toHaveBeenCalledOnce();
+    expect(startExecute).toHaveBeenCalledWith(
+      expect.objectContaining({
+        outputSchema: expect.objectContaining({ type: 'object' }),
+      }),
+      expect.anything(),
+    );
+    expect(statusExecute).toHaveBeenCalledOnce();
+    expect(resultExecute).toHaveBeenCalledOnce();
+    expect(model.doStreamCalls).toHaveLength(5);
+    expect(JSON.stringify(model.doStreamCalls[1]?.prompt)).toContain(
+      'rejected before any Agent API request',
+    );
+  });
+
   it('ignores a browser-controlled key when the deployed key is absent', async () => {
     delete process.env.NIMBLE_API_KEY;
     const response = await POST(

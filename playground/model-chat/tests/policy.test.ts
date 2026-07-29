@@ -97,6 +97,257 @@ describe('model chat Agent V2 policy', () => {
     expect(statusExecute).toHaveBeenCalledOnce();
   });
 
+  it('rejects malformed outputSchema before consuming the create slot', async () => {
+    const startExecute = vi.fn(async () => ({
+      runId: 'task_run_one',
+      agentId: 'wsa_one',
+    }));
+    const tools = buildAgentTools('nimble_request_key', {
+      start: vi.fn(() => ({ execute: startExecute })),
+      status: vi.fn(() => ({ execute: vi.fn() })),
+      result: vi.fn(() => ({ execute: vi.fn() })),
+    } as never) as unknown as Record<string, Executable>;
+
+    await expect(
+      tools.startResearch.execute(
+        { task: 'one', outputSchema: { company: 'string' } },
+        {},
+      ),
+    ).rejects.toThrow(/rejected before any Agent API request/);
+    expect(startExecute).not.toHaveBeenCalled();
+  });
+
+  it('allows one corrected schema after a local rejection', async () => {
+    const created = { runId: 'task_run_one', agentId: 'wsa_one' };
+    const startExecute = vi.fn(async () => created);
+    const tools = buildAgentTools('nimble_request_key', {
+      start: vi.fn(() => ({ execute: startExecute })),
+      status: vi.fn(() => ({ execute: vi.fn() })),
+      result: vi.fn(() => ({ execute: vi.fn() })),
+    } as never) as unknown as Record<string, Executable>;
+
+    await expect(
+      tools.startResearch.execute(
+        { task: 'one', outputSchema: { company: 'string' } },
+        {},
+      ),
+    ).rejects.toThrow(/before any Agent API request/);
+
+    const corrected = tools.startResearch.execute(
+      {
+        task: 'one',
+        outputSchema: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              company: { type: 'string' },
+              recommended_rank: { type: ['number', 'null'] },
+            },
+            required: ['company', 'recommended_rank'],
+            additionalProperties: false,
+          },
+        },
+      },
+      {},
+    );
+    await expect(corrected).resolves.toEqual(created);
+    await expect(
+      tools.startResearch.execute({ task: 'duplicate' }, {}),
+    ).resolves.toEqual(created);
+    expect(startExecute).toHaveBeenCalledOnce();
+    expect(startExecute).toHaveBeenCalledWith(
+      expect.objectContaining({
+        outputSchema: expect.objectContaining({ type: 'array' }),
+      }),
+      {},
+    );
+  });
+
+  it('memoizes a post-validation create rejection', async () => {
+    const createError = new Error('ambiguous transport failure');
+    const startExecute = vi.fn(async () => {
+      throw createError;
+    });
+    const tools = buildAgentTools('nimble_request_key', {
+      start: vi.fn(() => ({ execute: startExecute })),
+      status: vi.fn(() => ({ execute: vi.fn() })),
+      result: vi.fn(() => ({ execute: vi.fn() })),
+    } as never) as unknown as Record<string, Executable>;
+    const validInput = {
+      task: 'one',
+      outputSchema: {
+        type: 'object',
+        properties: { company: { type: 'string' } },
+      },
+    };
+
+    const first = tools.startResearch.execute(validInput, {});
+    await expect(first).rejects.toBe(createError);
+    const second = tools.startResearch.execute(validInput, {});
+    expect(second).toBe(first);
+    await expect(second).rejects.toBe(createError);
+    expect(startExecute).toHaveBeenCalledOnce();
+  });
+
+  it('fails closed on unsupported, oversized, or mismatched structured inputs', async () => {
+    const startExecute = vi.fn(async () => ({
+      runId: 'task_run_one',
+      agentId: 'wsa_one',
+    }));
+    const build = () =>
+      buildAgentTools('nimble_request_key', {
+        start: vi.fn(() => ({ execute: startExecute })),
+        status: vi.fn(() => ({ execute: vi.fn() })),
+        result: vi.fn(() => ({ execute: vi.fn() })),
+      } as never) as unknown as Record<string, Executable>;
+
+    const invalidInputs = [
+      {
+        task: 'nested shorthand',
+        outputSchema: {
+          type: 'object',
+          properties: { company: { label: 'string' } },
+        },
+      },
+      {
+        task: 'remote ref',
+        outputSchema: {
+          type: 'object',
+          properties: { company: { $ref: 'https://example.test/schema.json' } },
+        },
+      },
+      {
+        task: 'oversized',
+        outputSchema: {
+          type: 'object',
+          description: 'x'.repeat(17_000),
+          properties: { company: { type: 'string' } },
+        },
+      },
+      {
+        task: 'invalid numeric constraint',
+        outputSchema: {
+          type: 'object',
+          properties: { score: { type: 'number', multipleOf: 0 } },
+        },
+      },
+      {
+        task: 'duplicate enum',
+        outputSchema: {
+          type: 'object',
+          properties: {
+            confidence: { type: 'string', enum: ['high', 'high'] },
+          },
+        },
+      },
+      {
+        task: 'input without schema',
+        inputData: [{ company: 'Browserbase' }],
+      },
+    ];
+
+    for (const input of invalidInputs) {
+      await expect(build().startResearch.execute(input, {})).rejects.toThrow(
+        /before any Agent API request/,
+      );
+    }
+    expect(startExecute).not.toHaveBeenCalled();
+  });
+
+  it('reports invalid sibling schema nodes in one local correction response', async () => {
+    const startExecute = vi.fn(async () => ({
+      runId: 'task_run_one',
+      agentId: 'wsa_one',
+    }));
+    const tools = buildAgentTools('nimble_request_key', {
+      start: vi.fn(() => ({ execute: startExecute })),
+      status: vi.fn(() => ({ execute: vi.fn() })),
+      result: vi.fn(() => ({ execute: vi.fn() })),
+    } as never) as unknown as Record<string, Executable>;
+
+    const start = tools.startResearch.execute(
+      {
+        task: 'invalid siblings',
+        outputSchema: {
+          type: 'object',
+          properties: {
+            company: { type: 'string', pattern: '^Nimble' },
+            rank: { type: 'number', default: 1 },
+          },
+        },
+      },
+      {},
+    );
+
+    await expect(start).rejects.toThrow(
+      /properties\.company uses unsupported keywords: pattern; .*properties\.rank uses unsupported keywords: default/,
+    );
+    expect(startExecute).not.toHaveBeenCalled();
+  });
+
+  it('reports nested issues even when parent schema types are missing', async () => {
+    const startExecute = vi.fn(async () => ({
+      runId: 'task_run_one',
+      agentId: 'wsa_one',
+    }));
+    const tools = buildAgentTools('nimble_request_key', {
+      start: vi.fn(() => ({ execute: startExecute })),
+      status: vi.fn(() => ({ execute: vi.fn() })),
+      result: vi.fn(() => ({ execute: vi.fn() })),
+    } as never) as unknown as Record<string, Executable>;
+
+    const start = tools.startResearch.execute(
+      {
+        task: 'missing parent types',
+        outputSchema: {
+          type: 'object',
+          properties: {
+            company: {
+              properties: {
+                name: { type: 'string', pattern: '^Nimble' },
+              },
+            },
+          },
+        },
+      },
+      {},
+    );
+
+    await expect(start).rejects.toThrow(
+      /properties\.company\.type must be .*; .*properties\.company\.properties\.name uses unsupported keywords: pattern/,
+    );
+    expect(startExecute).not.toHaveBeenCalled();
+  });
+
+  it('reports duplicate required names even when properties are absent', async () => {
+    const startExecute = vi.fn(async () => ({
+      runId: 'task_run_one',
+      agentId: 'wsa_one',
+    }));
+    const tools = buildAgentTools('nimble_request_key', {
+      start: vi.fn(() => ({ execute: startExecute })),
+      status: vi.fn(() => ({ execute: vi.fn() })),
+      result: vi.fn(() => ({ execute: vi.fn() })),
+    } as never) as unknown as Record<string, Executable>;
+
+    const start = tools.startResearch.execute(
+      {
+        task: 'duplicate required names',
+        outputSchema: {
+          type: 'object',
+          required: ['company', 'company'],
+        },
+      },
+      {},
+    );
+
+    await expect(start).rejects.toThrow(
+      /required must contain unique names.*; .*properties must be/,
+    );
+    expect(startExecute).not.toHaveBeenCalled();
+  });
+
   it('default-denies unless a short-lived audience-bound origin assertion matches', async () => {
     const previous = process.env.PLAYGROUND_GATEWAY_SECRET;
     const previousAudience = process.env.PLAYGROUND_GATEWAY_AUDIENCE;
