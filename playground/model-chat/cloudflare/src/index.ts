@@ -93,7 +93,7 @@ export default {
       }
     }
 
-    const container = env.MODEL_CHAT.getByName("model-chat-v3");
+    const container = env.MODEL_CHAT.getByName("model-chat-v4");
     await container.ensureReady();
     return container.fetch(
       protectedUpstreamRequest(
