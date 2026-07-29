@@ -451,6 +451,65 @@ describe('nimbleAgentStartRun — request mapping', () => {
     expect(overridden.calls.run[0]!.body.agent_name).toBe('model-agent');
   });
 
+  // Identity: a persistent create must come back owned by the agent we asked
+  // for; adopting a different owner would return a pair pointing elsewhere.
+  it('rejects a persistent create returned under a different agent', async () => {
+    const OTHER = 'wsa_deadbeef-0000-4000-8000-00000000ffff';
+    const { client } = scriptedRunsClient({ create: rawRun({ web_search_agent_id: OTHER }) });
+    await expect(runStart({ client, agentId: AGENT_ID }, { task: 't' })).rejects.toMatchObject({
+      name: 'NimbleAgentRunError',
+      reason: 'protocol',
+      runId: RUN_ID,
+      agentId: AGENT_ID,
+    });
+  });
+
+  it('accepts a persistent create returned under the requested agent', async () => {
+    const { client } = scriptedRunsClient({ create: rawRun({ web_search_agent_id: AGENT_ID }) });
+    const out = await runStart({ client, agentId: AGENT_ID }, { task: 't' });
+    expect(out.agentId).toBe(AGENT_ID);
+  });
+
+  // The generated route has no requested agent to compare against, so any
+  // non-empty owner the server names is legitimate.
+  it('accepts any owner the server names on the generated route', async () => {
+    const generatedAgent = 'wsa_generated-0000-4000-8000-000000000009';
+    const { client } = scriptedRunsClient({
+      run: rawRun({ web_search_agent_id: generatedAgent }),
+    });
+    const out = await runStart({ client }, { task: 't' });
+    expect(out.agentId).toBe(generatedAgent);
+  });
+
+  // Cost bound: a configured effort PINS the tier and beats the model.
+  it('pins a configured effort over the model choice on both routes', async () => {
+    const persistent = scriptedRunsClient();
+    await runStart(
+      { client: persistent.client, agentId: AGENT_ID, effort: 'low' },
+      { task: 't', effort: 'x-high' },
+    );
+    expect(persistent.calls.create[0]!.body.effort).toBe('low');
+
+    const generated = scriptedRunsClient();
+    await runStart({ client: generated.client, effort: 'low' }, { task: 't', effort: 'high' });
+    expect(generated.calls.run[0]!.body.effort).toBe('low');
+  });
+
+  it('pins a configured effort even when the model omits one', async () => {
+    const { client, calls } = scriptedRunsClient();
+    await runStart({ client, effort: 'low' }, { task: 't' });
+    expect(calls.run[0]!.body.effort).toBe('low');
+  });
+
+  it('gates a configured max pin before any create request', async () => {
+    const gated = scriptedRunsClient();
+    await expect(
+      runStart({ client: gated.client, effort: 'max' }, { task: 't' }),
+    ).rejects.toThrow(/custom budget/i);
+    expect(gated.calls.create).toHaveLength(0);
+    expect(gated.calls.run).toHaveLength(0);
+  });
+
   it('wraps a create failure with status and agent context', async () => {
     const { client } = scriptedRunsClient({ create: httpError(429, 'rate limited') });
     await expect(runStart({ client, agentId: AGENT_ID }, { task: 't' })).rejects.toMatchObject({

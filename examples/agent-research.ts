@@ -11,9 +11,12 @@
  *
  * No agent instance is required: with NIMBLE_AGENT_ID unset, Nimble generates
  * one per run and returns its id, which is what makes the run resumable.
- * This cost-bounded example explicitly uses `low` effort. The reusable tool
- * otherwise omits effort unless the caller supplies an override. Creation is
- * never retried.
+ * Local demo cost policy: this example PINS `low` effort by configuring the
+ * tool (`nimbleAgentStartRun({ effort: 'low' })`), so the model cannot omit it
+ * or pick a costlier tier — the bound is mechanical, not a prompt request.
+ * That pin is this example's policy, not the library default: the reusable
+ * tool omits effort unless a caller supplies one, letting the agent/template
+ * default apply. Creation is never retried.
  *
  *   export NIMBLE_API_KEY=...  export OPENAI_API_KEY=...
  *   export NIMBLE_AGENT_ID=wsa_...                       # optional
@@ -56,12 +59,13 @@ async function startPhase(task: string): Promise<RunHandle> {
   const { text, steps } = await generateText({
     model,
     prompt:
-      `Start a low-effort deep-research run for this task (this example uses ` +
-      `low as a local demo cost policy), then tell the user (one short ` +
+      `Start a deep-research run for this task, then tell the user (one short ` +
       `paragraph) that research is underway and their answer will be ready in a ` +
       `few minutes. If starting fails, do NOT claim research is underway — ` +
       `relay exactly what went wrong instead:\n\n${task}`,
-    tools: { startResearch: nimbleAgentStartRun() },
+    // The pin lives here, not in the prompt: whatever the model asks for, the
+    // run is created at `low`.
+    tools: { startResearch: nimbleAgentStartRun({ effort: 'low' }) },
     stopWhen: stepCountIs(2),
   });
 
