@@ -21,10 +21,6 @@ header { display: grid; grid-template-columns: 1fr auto; gap: 28px; align-items:
 h1 { margin: 10px 0 0; font: 800 clamp(36px, 7vw, 76px)/.88 Georgia, serif; letter-spacing: -.055em; }
 .policy { background: var(--ink); color: var(--paper); border-radius: 2px; padding: 18px; display: grid; gap: 7px; font-size: 12px; box-shadow: 8px 8px 0 var(--orange); }
 .policy b { color: var(--acid); text-transform: uppercase; letter-spacing: .12em; }
-.key-panel { margin: 28px 0 0; border: 1px solid var(--line); background: rgba(243,240,230,.92); padding: 16px; display: grid; grid-template-columns: 220px 1fr; gap: 8px 16px; align-items: center; }
-.key-panel label { font-weight: 800; font-size: 12px; text-transform: uppercase; }
-.key-panel input { width: 100%; border: 0; border-bottom: 2px solid var(--line); padding: 10px 4px; background: transparent; }
-.key-panel p { grid-column: 2; color: var(--muted); font-size: 11px; margin: 0; }
 .messages { flex: 1; padding: 34px 0 140px; display: grid; align-content: start; gap: 24px; }
 .empty { max-width: 760px; font: 20px/1.5 Georgia, serif; }
 .samples { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 22px; }
@@ -50,7 +46,35 @@ h1 { margin: 10px 0 0; font: 800 clamp(36px, 7vw, 76px)/.88 Georgia, serif; lett
 .evidence-list span { display: block; color: var(--muted); margin-top: 3px; }
 .evidence-list q { display: block; margin: 4px 0 0 10px; padding-left: 8px; border-left: 2px solid var(--orange); color: var(--ink); }
 .evidence-list a { color: #16653e; }
-.trust { color: #24773a; }.error { color: #b23320; }
+.trust { color: #24773a; }
+.classification { color: #9b3a1f; }
+.classification.grounded { color: #24773a; }
+.actual-result pre {
+  margin: 9px 0 0;
+  overflow-x: auto;
+  padding: 12px;
+  border: 1px solid rgba(38,54,43,.28);
+  background: #f7f3e8;
+  color: var(--ink);
+  font: 12px/1.55 "IBM Plex Mono", "Courier New", monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.error { color: #b23320; }
+.authorization-error {
+  position: fixed;
+  left: 50%;
+  bottom: 116px;
+  z-index: 2;
+  width: min(1080px, calc(100% - 32px));
+  margin: 0;
+  transform: translateX(-50%);
+  padding: 10px 14px;
+  border: 1px solid #b23320;
+  background: #fff0ea;
+  color: #8d2517;
+  font-size: 12px;
+}
 .composer { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); width: min(1080px, calc(100% - 32px)); display: grid; grid-template-columns: 1fr auto; background: var(--ink); padding: 10px; box-shadow: 8px 8px 0 var(--orange); }
 .composer textarea { resize: none; border: 0; background: #fbf8ed; color: var(--ink); padding: 13px; outline: 0; }
 .composer button { border: 0; background: var(--acid); color: var(--ink); font-weight: 900; padding: 0 24px; cursor: pointer; }
@@ -58,8 +82,6 @@ h1 { margin: 10px 0 0; font: 800 clamp(36px, 7vw, 76px)/.88 Georgia, serif; lett
 @media (max-width: 720px) {
   header { grid-template-columns: 1fr; }
   .policy { justify-self: stretch; }
-  .key-panel { grid-template-columns: 1fr; }
-  .key-panel p { grid-column: 1; }
   .samples { grid-template-columns: 1fr; }
   .composer { grid-template-columns: 1fr; }
   .composer button { padding: 12px; }

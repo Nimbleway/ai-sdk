@@ -4,7 +4,13 @@ import { useMemo, useRef, useState } from 'react';
 import { useChat } from '@ai-sdk/react';
 import { DefaultChatTransport } from 'ai';
 import { SAMPLE_QUERIES } from '../lib/sample-queries';
-import { inspectableEvidence, trustFromToolOutput } from '../lib/presentation';
+import {
+  actualResultFromToolOutput,
+  classifyTrust,
+  fullTrustFromToolOutput,
+  inspectableEvidence,
+  trustFromToolOutput,
+} from '../lib/presentation';
 import { csrfTokenFromCookie } from '../lib/browser-auth';
 import { CHAT_REQUEST_ID_HEADER, newChatRequestId } from '../lib/request-id';
 
@@ -24,6 +30,9 @@ function ToolCard({ part }: { part: ToolPart }) {
     : '';
   const trust = trustFromToolOutput(output);
   const evidence = inspectableEvidence(output);
+  const actualResult = actualResultFromToolOutput(output);
+  const classification = output ? classifyTrust(output) : undefined;
+  const fullTrust = fullTrustFromToolOutput(output);
   return (
     <section className="tool" data-state={part.state}>
       <div className="tool-head">
@@ -38,6 +47,23 @@ function ToolCard({ part }: { part: ToolPart }) {
           Trust: {trust.confidence ?? 'unrated'} · {trust.sources?.length ?? 0} sources ·{' '}
           {trust.claims?.length ?? 0} claims
         </p>
+      )}
+      {classification && (
+        <p className={`classification ${classification.label === 'GROUNDED' ? 'grounded' : ''}`}>
+          Classification: <b>{classification.label}</b> · {classification.reason}
+        </p>
+      )}
+      {actualResult !== undefined && (
+        <details open className="actual-result">
+          <summary>Actual result (uncropped)</summary>
+          <pre>{actualResult}</pre>
+        </details>
+      )}
+      {fullTrust !== undefined && (
+        <details className="actual-result">
+          <summary>Full trust metadata</summary>
+          <pre>{fullTrust}</pre>
+        </details>
       )}
       {evidence.reasoning && (
         <details>
@@ -84,33 +110,65 @@ function ToolCard({ part }: { part: ToolPart }) {
 }
 
 export default function Page() {
-  const [nimbleKey, setNimbleKey] = useState('');
   const requestId = useRef<string | undefined>(undefined);
+  const spendAuthorized = useRef(false);
   const transport = useMemo(
     () =>
       new DefaultChatTransport({
         api: '/api/chat',
         headers: (): Record<string, string> => {
           const headers: Record<string, string> = {};
-          if (nimbleKey.trim()) headers['X-Nimble-Api-Key'] = nimbleKey.trim();
           const csrf = csrfTokenFromCookie(document.cookie);
           if (csrf) headers['X-CSRF-Token'] = csrf;
           if (requestId.current) headers[CHAT_REQUEST_ID_HEADER] = requestId.current;
           return headers;
         },
       }),
-    [nimbleKey],
+    [],
   );
   const { messages, sendMessage, status } = useChat({ transport });
   const [input, setInput] = useState('');
-  const busy = status === 'submitted' || status === 'streaming';
+  const [authorizing, setAuthorizing] = useState(false);
+  const [authorizationError, setAuthorizationError] = useState<string | undefined>();
+  const busy = authorizing || status === 'submitted' || status === 'streaming';
 
-  function submit(text: string) {
+  async function submit(text: string) {
     const task = text.trim();
     if (!task || busy) return;
-    requestId.current = newChatRequestId();
-    void sendMessage({ text: task });
-    setInput('');
+    setAuthorizing(true);
+    setAuthorizationError(undefined);
+    try {
+      if (!spendAuthorized.current) {
+        const csrf = csrfTokenFromCookie(document.cookie);
+        if (!csrf) throw new Error('The protected session is missing its CSRF token.');
+        const response = await fetch('/__auth/spend/authorize', {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            'x-csrf-token': csrf,
+          },
+          body: JSON.stringify({
+            integration: 'vercel-ai-sdk-agent-v2',
+            effortCeiling: 'low',
+            createLimit: 1,
+          }),
+        });
+        if (!response.ok) {
+          const result = await response.json().catch(() => ({})) as { error?: string };
+          throw new Error(result.error ?? 'One-run authorization was rejected.');
+        }
+        spendAuthorized.current = true;
+      }
+      requestId.current = newChatRequestId();
+      await sendMessage({ text: task });
+      setInput('');
+    } catch (error) {
+      setAuthorizationError(
+        error instanceof Error ? error.message : 'The protected run could not start.',
+      );
+    } finally {
+      setAuthorizing(false);
+    }
   }
 
   return (
@@ -123,22 +181,10 @@ export default function Page() {
         <div className="policy">
           <b>Runtime policy</b>
           <span>generated agent · low effort</span>
+          <span>explicit 5m authorization · one create</span>
           <span>10s polling · zero create retries</span>
         </div>
       </header>
-
-      <section className="key-panel">
-        <label htmlFor="nimble-key">Ephemeral Nimble API key</label>
-        <input
-          id="nimble-key"
-          type="password"
-          value={nimbleKey}
-          onChange={(event) => setNimbleKey(event.target.value)}
-          autoComplete="off"
-          placeholder="Optional when the protected server fallback is configured"
-        />
-        <p>Held only in this page’s memory and sent to the protected server per request.</p>
-      </section>
 
       <section className="messages" aria-live="polite">
         {messages.length === 0 && (
@@ -147,7 +193,7 @@ export default function Page() {
               Web Search Agent, retain both IDs, inspect status, and retrieve grounded output.</p>
             <div className="samples">
               {SAMPLE_QUERIES.map((sample) => (
-                <button key={sample.id} onClick={() => submit(sample.prompt)}>
+                <button key={sample.id} onClick={() => { void submit(sample.prompt); }}>
                   <b>{sample.title}</b>
                   <span>{sample.score}/100 query contract</span>
                 </button>
@@ -169,7 +215,8 @@ export default function Page() {
         ))}
       </section>
 
-      <form className="composer" onSubmit={(event) => { event.preventDefault(); submit(input); }}>
+      {authorizationError && <p className="authorization-error">{authorizationError}</p>}
+      <form className="composer" onSubmit={(event) => { event.preventDefault(); void submit(input); }}>
         <textarea
           value={input}
           onChange={(event) => setInput(event.target.value)}
@@ -177,7 +224,9 @@ export default function Page() {
           disabled={busy}
           rows={2}
         />
-        <button disabled={busy || !input.trim()}>{busy ? 'Researching…' : 'Run agent'}</button>
+        <button disabled={busy || !input.trim()}>
+          {authorizing ? 'Authorizing one run…' : busy ? 'Researching…' : 'Authorize & run once'}
+        </button>
       </form>
     </main>
   );

@@ -16,17 +16,15 @@ For an open-ended research request:
    with low confidence or no citations as degraded, not authoritative.
 Never retry run creation. Never claim completion from status alone.`;
 
-function resolveNimbleKey(request: Request): string | undefined {
-  const supplied = request.headers.get('x-nimble-api-key')?.trim();
-  const fallback = process.env.NIMBLE_API_KEY?.trim();
-  return supplied || fallback;
+function configuredNimbleKey(): string | undefined {
+  return process.env.NIMBLE_API_KEY?.trim();
 }
 
 export async function POST(request: Request) {
-  if (!isGatewayAuthorized(request)) {
+  if (!await isGatewayAuthorized(request)) {
     return Response.json({ error: 'Unauthorized.' }, { status: 401 });
   }
-  const apiKey = resolveNimbleKey(request);
+  const apiKey = configuredNimbleKey();
   if (!apiKey) {
     return Response.json(
       { error: 'A Nimble API key is required for this protected action.' },

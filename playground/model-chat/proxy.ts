@@ -1,8 +1,8 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { isGatewayAuthorized } from './lib/gateway-auth';
 
-export function proxy(request: NextRequest) {
-  if (isGatewayAuthorized(request)) return NextResponse.next();
+export async function proxy(request: NextRequest) {
+  if (await isGatewayAuthorized(request)) return NextResponse.next();
   if (request.nextUrl.pathname.startsWith('/api/')) {
     return NextResponse.json({ error: 'Unauthorized.' }, { status: 401 });
   }

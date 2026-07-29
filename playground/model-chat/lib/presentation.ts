@@ -21,13 +21,29 @@ export type InspectableEvidence = {
   reasoning?: string;
 };
 
+export type TrustClassification = {
+  label: 'GROUNDED' | 'DEGRADED / HOLD' | 'PENDING';
+  reason: string;
+};
+
 const bounded = (value: unknown, limit: number): string | undefined =>
   typeof value === 'string' && value.trim() ? value.trim().slice(0, limit) : undefined;
+
+function inspectableUrl(value: unknown): string | undefined {
+  const candidate = bounded(value, 500);
+  if (!candidate) return undefined;
+  try {
+    const parsed = new URL(candidate);
+    return parsed.protocol === 'https:' || parsed.protocol === 'http:' ? parsed.href : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 function source(value: unknown, withExcerpts = false): InspectableSource | undefined {
   if (!value || typeof value !== 'object') return undefined;
   const record = value as Record<string, unknown>;
-  const url = bounded(record.url ?? record.source_url, 500);
+  const url = inspectableUrl(record.url ?? record.source_url);
   const title = bounded(record.title ?? record.name, 160);
   const excerpts = withExcerpts && Array.isArray(record.excerpts)
     ? record.excerpts
@@ -43,6 +59,86 @@ export function trustFromToolOutput(
 ): TrustSummary | undefined {
   const resultOutput = toolOutput?.output as Record<string, unknown> | undefined;
   return (resultOutput?.trust ?? toolOutput?.trust) as TrustSummary | undefined;
+}
+
+/**
+ * Return the complete answer from the Agent V2 result envelope. This value is
+ * intentionally not truncated: the hosted harness must make the retrieved
+ * result inspectable rather than presenting a preview as if it were evidence.
+ */
+export function actualResultFromToolOutput(
+  toolOutput: Record<string, unknown> | undefined,
+): string | undefined {
+  if (toolOutput?.ready !== true || toolOutput.status !== 'completed') return undefined;
+  const resultOutput = toolOutput?.output;
+  if (!resultOutput || typeof resultOutput !== 'object') return undefined;
+  const record = resultOutput as Record<string, unknown>;
+  if (typeof record.text === 'string') return record.text;
+  if (record.json && typeof record.json === 'object') {
+    return JSON.stringify(record.json, null, 2);
+  }
+  return undefined;
+}
+
+export function classifyTrust(
+  toolOutput: Record<string, unknown> | undefined,
+): TrustClassification {
+  if (toolOutput?.ready !== true) {
+    return {
+      label: 'PENDING',
+      reason: 'The lifecycle has not returned a completed result.',
+    };
+  }
+
+  const trust = trustFromToolOutput(toolOutput);
+  if (!trust) {
+    return {
+      label: 'DEGRADED / HOLD',
+      reason: 'The completed result has no trust metadata.',
+    };
+  }
+
+  const sourceCount = Array.isArray(trust.sources)
+    ? trust.sources.filter((item) => Boolean(source(item)?.url)).length
+    : 0;
+  const citationCount = Array.isArray(trust.claims)
+    ? trust.claims.reduce<number>((total, claim) => {
+        if (!claim || typeof claim !== 'object') return total;
+        const citations = (claim as Record<string, unknown>).citations;
+        return total + (
+          Array.isArray(citations)
+            ? citations.filter((item) => Boolean(source(item, true)?.url)).length
+            : 0
+        );
+      }, 0)
+    : 0;
+  const confidence = typeof trust.confidence === 'string'
+    ? trust.confidence.trim().toLowerCase()
+    : '';
+
+  if (sourceCount === 0 || citationCount === 0) {
+    return {
+      label: 'DEGRADED / HOLD',
+      reason: `Grounding is incomplete (${sourceCount} sources, ${citationCount} citations).`,
+    };
+  }
+  if (confidence !== 'high' && confidence !== 'medium') {
+    return {
+      label: 'DEGRADED / HOLD',
+      reason: `Trust confidence is ${confidence || 'unrated'}.`,
+    };
+  }
+  return {
+    label: 'GROUNDED',
+    reason: `${sourceCount} sources and ${citationCount} claim citations are available for inspection.`,
+  };
+}
+
+export function fullTrustFromToolOutput(
+  toolOutput: Record<string, unknown> | undefined,
+): string | undefined {
+  const trust = trustFromToolOutput(toolOutput);
+  return trust ? JSON.stringify(trust, null, 2) : undefined;
 }
 
 export function inspectableEvidence(

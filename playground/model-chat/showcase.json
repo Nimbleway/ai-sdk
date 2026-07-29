@@ -5,7 +5,7 @@
   "runtime_command": ["pnpm", "start"],
   "agent_api_v2": {
     "enabled": true,
-    "identity_modes": ["auto", "agent_id"],
+    "identity_modes": ["auto"],
     "product_modes": ["research", "enrichment", "dataset_building"],
     "run_controls": [
       "input",
@@ -15,17 +15,9 @@
       "output_schema",
       "sources",
       "skill",
-      "use_case",
-      "enable_events"
+      "use_case"
     ],
-    "allowed_efforts": ["low", "medium", "high", "x-high"],
-    "gated_effort": {
-      "tier": "max",
-      "treatment": "positive_stop_before_create",
-      "engagement_url": "https://www.nimbleway.com/contact",
-      "closest_available": "x-high",
-      "silent_degradation": false
-    },
+    "allowed_efforts": ["low"],
     "create_retries": 0,
     "client_source": "vercel-ai-sdk"
   },
@@ -33,8 +25,12 @@
     "employee_email_domain": "nimbleway.com",
     "employee_methods": ["otp", "magic_link"],
     "admin_method": "webauthn",
+    "agent_method": "signed_single_use_activation",
+    "live_spend_authorizer": "registered_agent_only",
+    "live_spend_grant": "signed_epoch_bound_single_create",
+    "container_origin_auth": "signed_30_second_assertion",
     "backend_default_deny": true,
-    "deployment_access": "admin_only"
+    "deployment_access": "three_lane_protected"
   },
   "evidence": {
     "raw_directory": "evidence/raw",

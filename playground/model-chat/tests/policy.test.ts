@@ -1,8 +1,17 @@
 import { describe, expect, it, vi } from 'vitest';
 import { POLL_INTERVAL_MS, RESULT_TIMEOUT_MS, buildAgentTools } from '../lib/agent-tools';
 import { SAMPLE_QUERIES } from '../lib/sample-queries';
-import { GATEWAY_HEADER, isGatewayAuthorized } from '../lib/gateway-auth';
-import { inspectableEvidence, trustFromToolOutput } from '../lib/presentation';
+import {
+  GATEWAY_HEADER,
+  isGatewayAuthorized,
+  signGatewayAssertion,
+} from '../lib/gateway-auth';
+import {
+  actualResultFromToolOutput,
+  classifyTrust,
+  inspectableEvidence,
+  trustFromToolOutput,
+} from '../lib/presentation';
 import { POST } from '../app/api/chat/route';
 import { csrfTokenFromCookie } from '../lib/browser-auth';
 import { newChatRequestId } from '../lib/request-id';
@@ -88,28 +97,61 @@ describe('model chat Agent V2 policy', () => {
     expect(statusExecute).toHaveBeenCalledOnce();
   });
 
-  it('default-denies unless the private gateway credential matches', () => {
+  it('default-denies unless a short-lived audience-bound origin assertion matches', async () => {
     const previous = process.env.PLAYGROUND_GATEWAY_SECRET;
+    const previousAudience = process.env.PLAYGROUND_GATEWAY_AUDIENCE;
     process.env.PLAYGROUND_GATEWAY_SECRET = 'origin-only-secret';
+    process.env.PLAYGROUND_GATEWAY_AUDIENCE = 'playground.test';
     try {
-      expect(isGatewayAuthorized(new Request('https://playground.test/'))).toBe(false);
-      expect(
-        isGatewayAuthorized(
-          new Request('https://playground.test/', {
-            headers: { [GATEWAY_HEADER]: 'wrong' },
-          }),
-        ),
-      ).toBe(false);
-      expect(
-        isGatewayAuthorized(
-          new Request('https://playground.test/', {
-            headers: { [GATEWAY_HEADER]: 'origin-only-secret' },
-          }),
-        ),
-      ).toBe(true);
+      await expect(isGatewayAuthorized(new Request('https://playground.test/')))
+        .resolves.toBe(false);
+      await expect(
+        isGatewayAuthorized(new Request('https://playground.test/', {
+          headers: { [GATEWAY_HEADER]: 'wrong' },
+        })),
+      ).resolves.toBe(false);
+      const now = Math.floor(Date.now() / 1_000);
+      const assertion = await signGatewayAssertion('origin-only-secret', {
+        role: 'agent',
+        sid: 'S'.repeat(43),
+        aud: 'playground.test',
+        iat: now,
+        exp: now + 30,
+      });
+      await expect(
+        isGatewayAuthorized(new Request('https://playground.test/', {
+          headers: { [GATEWAY_HEADER]: assertion },
+        })),
+      ).resolves.toBe(true);
+      const wrongAudience = await signGatewayAssertion('origin-only-secret', {
+        role: 'agent',
+        sid: 'S'.repeat(43),
+        aud: 'other.test',
+        iat: now,
+        exp: now + 30,
+      });
+      await expect(
+        isGatewayAuthorized(new Request('https://playground.test/', {
+          headers: { [GATEWAY_HEADER]: wrongAudience },
+        })),
+      ).resolves.toBe(false);
+      const expired = await signGatewayAssertion('origin-only-secret', {
+        role: 'agent',
+        sid: 'S'.repeat(43),
+        aud: 'playground.test',
+        iat: now - 31,
+        exp: now - 1,
+      });
+      await expect(
+        isGatewayAuthorized(new Request('https://playground.test/', {
+          headers: { [GATEWAY_HEADER]: expired },
+        })),
+      ).resolves.toBe(false);
     } finally {
       if (previous === undefined) delete process.env.PLAYGROUND_GATEWAY_SECRET;
       else process.env.PLAYGROUND_GATEWAY_SECRET = previous;
+      if (previousAudience === undefined) delete process.env.PLAYGROUND_GATEWAY_AUDIENCE;
+      else process.env.PLAYGROUND_GATEWAY_AUDIENCE = previousAudience;
     }
   });
 
@@ -183,6 +225,66 @@ describe('model chat Agent V2 policy', () => {
     });
     expect(evidence.claims[0]?.key).toBe('$.company.founded');
     expect(evidence.claims[0]?.citations[0]?.excerpts).toEqual(['founded in 2016']);
+  });
+
+  it('preserves the complete text and structured result without cropping', () => {
+    const longText = 'evidence '.repeat(5_000);
+    expect(actualResultFromToolOutput({
+      ready: true,
+      status: 'completed',
+      output: { type: 'text', text: longText },
+    }))
+      .toBe(longText);
+    expect(
+      actualResultFromToolOutput({
+        ready: true,
+        status: 'completed',
+        output: { type: 'json', json: { decision: 'hold', findings: ['one', 'two'] } },
+      }),
+    ).toBe('{\n  "decision": "hold",\n  "findings": [\n    "one",\n    "two"\n  ]\n}');
+  });
+
+  it('classifies zero-citation completion as degraded and cited output as grounded', () => {
+    expect(
+      classifyTrust({
+        ready: true,
+        output: {
+          trust: {
+            confidence: 'high',
+            sources: [{ url: 'https://example.test/source' }],
+            claims: [{ citations: [] }],
+          },
+        },
+      }),
+    ).toMatchObject({ label: 'DEGRADED / HOLD' });
+
+    expect(
+      classifyTrust({
+        ready: true,
+        output: {
+          trust: {
+            confidence: 'high',
+            sources: [{ url: 'https://example.test/source' }],
+            claims: [{ citations: [{ url: 'https://example.test/citation' }] }],
+          },
+        },
+      }),
+    ).toMatchObject({ label: 'GROUNDED' });
+  });
+
+  it('does not treat malformed or non-web evidence as grounded', () => {
+    expect(
+      classifyTrust({
+        ready: true,
+        output: {
+          trust: {
+            confidence: 'pre_existing',
+            sources: [{}],
+            claims: [{ citations: [{ url: 'javascript:alert(1)' }] }],
+          },
+        },
+      }),
+    ).toMatchObject({ label: 'DEGRADED / HOLD' });
   });
 
   it('generates a fresh stable-format ID for every new submission', () => {
