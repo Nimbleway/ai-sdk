@@ -40,11 +40,14 @@ The third lane is a separate audience-bound local-agent principal. It uses a
 60-second canonical challenge authenticated by the per-environment session
 secret, a non-exportable P-256 signature, atomic nonce replay rejection, a
 one-use fragment activation, and a 15-minute `HttpOnly; Secure;
-SameSite=Strict` session. Configure `AGENT_AUTH_PUBLIC_KEY` as a Worker secret;
-the non-secret key ID, workspace ID, and exact RP hostname are pinned in
-`wrangler.jsonc`. The generated identity is bound to this release worktree and
-Worker origin. This Mac reported `keychain-nonextractable` rather than Secure
-Enclave, so the documented same-user local trust boundary still applies.
+SameSite=Strict` session. Configure `AGENT_AUTH_PUBLIC_KEY`,
+`AGENT_AUTH_KEY_ID`, `AGENT_AUTH_WORKSPACE_ID`, and `AUTH_RP_ID` as Worker
+secrets. The identifiers are deployment-specific even though they are not
+credentials, so keeping their values out of `wrangler.jsonc` prevents a fork
+from silently inheriting another deployment's identity. The generated identity
+is bound to this release worktree and Worker origin. This Mac reported
+`keychain-nonextractable` rather than Secure Enclave, so the documented
+same-user local trust boundary still applies.
 
 The model-chat Worker reuses this authentication state at the edge. Once a
 session is verified, it strips browser-supplied identity, authorization,

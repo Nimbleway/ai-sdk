@@ -1,7 +1,13 @@
-import { convertToModelMessages, stepCountIs, streamText, type UIMessage } from 'ai';
+import {
+  convertToModelMessages,
+  stepCountIs,
+  streamText,
+  validateUIMessages,
+  type UIMessage,
+} from 'ai';
 import { buildAgentTools } from '../../../lib/agent-tools';
 import { resolveModel } from '../../../lib/model';
-import { isGatewayAuthorized } from '../../../lib/gateway-auth';
+import { readGatewayAssertion } from '../../../lib/gateway-auth';
 
 export const runtime = 'nodejs';
 export const maxDuration = 360;
@@ -26,12 +32,74 @@ For an open-ended research request:
    with low confidence or no citations as degraded, not authoritative.
 Never claim completion from status alone.`;
 
+const MAX_CHAT_BODY_BYTES = 64 * 1_024;
+const MAX_CHAT_MESSAGES = 100;
+
 function configuredNimbleKey(): string | undefined {
   return process.env.NIMBLE_API_KEY?.trim();
 }
 
+function invalidChatRequest(): Response {
+  return Response.json(
+    { error: 'The chat request body is invalid or exceeds 64 KiB.' },
+    { status: 400, headers: { 'cache-control': 'no-store' } },
+  );
+}
+
+async function readBoundedMessages(request: Request): Promise<unknown[] | null> {
+  const declaredLength = request.headers.get('content-length');
+  if (declaredLength) {
+    const bytes = Number(declaredLength);
+    if (
+      !/^\d+$/.test(declaredLength) ||
+      !Number.isSafeInteger(bytes) ||
+      bytes > MAX_CHAT_BODY_BYTES
+    ) {
+      return null;
+    }
+  }
+
+  const reader = request.body?.getReader();
+  if (!reader) return null;
+  const chunks: Uint8Array[] = [];
+  let length = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      length += value.byteLength;
+      if (length > MAX_CHAT_BODY_BYTES) {
+        await reader.cancel();
+        return null;
+      }
+      chunks.push(value);
+    }
+  } catch {
+    return null;
+  }
+
+  const body = new Uint8Array(length);
+  let offset = 0;
+  for (const chunk of chunks) {
+    body.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(body));
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+  const messages = (parsed as { messages?: unknown }).messages;
+  if (!Array.isArray(messages) || messages.length > MAX_CHAT_MESSAGES) return null;
+  return messages;
+}
+
 export async function POST(request: Request) {
-  if (!await isGatewayAuthorized(request)) {
+  const assertion = await readGatewayAssertion(request);
+  if (assertion?.role !== 'agent') {
     return Response.json({ error: 'Unauthorized.' }, { status: 401 });
   }
   const apiKey = configuredNimbleKey();
@@ -41,13 +109,26 @@ export async function POST(request: Request) {
       { status: 401 },
     );
   }
-  const { messages }: { messages: UIMessage[] } = await request.json();
+  const messages = await readBoundedMessages(request);
+  if (!messages) return invalidChatRequest();
+
+  let modelMessages;
+  try {
+    const validatedMessages = await validateUIMessages<UIMessage>({
+      messages,
+    });
+    modelMessages = await convertToModelMessages(validatedMessages);
+  } catch {
+    return invalidChatRequest();
+  }
+
+  const tools = buildAgentTools(apiKey);
   try {
     const result = streamText({
       model: resolveModel(),
       system: SYSTEM_PROMPT,
-      messages: await convertToModelMessages(messages),
-      tools: buildAgentTools(apiKey),
+      messages: modelMessages,
+      tools,
       stopWhen: stepCountIs(8),
     });
     return result.toUIMessageStreamResponse({

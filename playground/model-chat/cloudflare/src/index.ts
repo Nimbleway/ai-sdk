@@ -1,5 +1,4 @@
 import { Container } from "@cloudflare/containers";
-import { DurableObject } from "cloudflare:workers";
 import {
   AdminAuthState,
   authenticate,
@@ -15,23 +14,15 @@ import {
 } from "./gateway";
 import {
   CHAT_REQUEST_ID_HEADER,
-  admitOnce,
   validChatRequestId,
 } from "./admission";
 import { MODEL_CHAT_INSTANCE_NAME } from "./container-name";
 
 interface Env extends AuthEnv, ModelRuntimeEnvironment {
   MODEL_CHAT: DurableObjectNamespace<ModelChatContainer>;
-  CHAT_ADMISSION: DurableObjectNamespace<ChatAdmissionState>;
 }
 
 export { AdminAuthState };
-
-export class ChatAdmissionState extends DurableObject<Env> {
-  async admit(): Promise<boolean> {
-    return admitOnce(this.ctx.storage);
-  }
-}
 
 export class ModelChatContainer extends Container<Env> {
   defaultPort = 3211;

@@ -32,9 +32,12 @@ API. The signing secret is never sent in the proxied request.
 The Cloudflare package deliberately targets the existing
 `vercel-ai-sdk-nimble-v2-playground` Worker. Its `v1` migration continues to
 name only the already-deployed `AdminAuthState`; `v2` adds only
-`ModelChatContainer`; `v3` adds only `ChatAdmissionState`. This preserves the
-Worker hostname, WebAuthn RP ID, Durable Object binding, and registered
-administrator passkey. The direct controller remains under
+`ModelChatContainer`; `v3` records the previously deployed but unused
+`ChatAdmissionState`; and `v4` removes that class and its unneeded binding.
+Exactly-one live admission is enforced by the atomic spend-grant transaction,
+not by an uninvoked duplicate control. This preserves the Worker hostname,
+WebAuthn RP ID, active Durable Object bindings, and registered administrator
+passkey. The direct controller remains under
 `playground/cloudflare/` as adapter evidence; model-chat is the replacement
 runtime for this Worker.
 
@@ -51,7 +54,10 @@ POST cannot bypass it; replays return `409`, and an admitted request is never
 automatically retried after an ambiguous forward.
 
 Configure one model provider (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, or
-`OPENROUTER_API_KEY`), then:
+`OPENROUTER_API_KEY`). The deployment-specific `AUTH_RP_ID`,
+`AGENT_AUTH_KEY_ID`, and `AGENT_AUTH_WORKSPACE_ID` bindings are required
+Worker secrets so a fork cannot silently inherit another deployment's
+identity. Then:
 
 ```sh
 pnpm install --frozen-lockfile

@@ -374,4 +374,87 @@ describe('authorized native chat route', () => {
     });
     expect(model.doStreamCalls).toHaveLength(0);
   });
+
+  it.each(['admin', 'employee'] as const)(
+    'rejects a valid %s assertion at the agent-only chat boundary',
+    async (role) => {
+      const now = Math.floor(Date.now() / 1_000);
+      const assertion = await signGatewayAssertion('origin-only-secret', {
+        role,
+        sid: 'S'.repeat(43),
+        aud: 'playground.test',
+        iat: now,
+        exp: now + 30,
+      });
+      const response = await POST(
+        new Request('https://playground.test/api/chat', {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            [GATEWAY_HEADER]: assertion,
+          },
+          body: JSON.stringify({ messages: [] }),
+        }),
+      );
+
+      expect(response.status).toBe(401);
+      await expect(response.json()).resolves.toEqual({ error: 'Unauthorized.' });
+      expect(model.doStreamCalls).toHaveLength(0);
+      expect(mocks.startFactory).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    {
+      name: 'malformed JSON',
+      body: '{"messages":',
+    },
+    {
+      name: 'a non-array messages field',
+      body: JSON.stringify({ messages: { role: 'user' } }),
+    },
+    {
+      name: 'a malformed UI message',
+      body: JSON.stringify({ messages: [{ role: 'user', parts: 'invalid' }] }),
+    },
+    {
+      name: 'more than 100 messages',
+      body: JSON.stringify({
+        messages: Array.from({ length: 101 }, (_, index) => ({
+          id: `message-${index}`,
+          role: 'user',
+          parts: [{ type: 'text', text: 'Research.' }],
+        })),
+      }),
+    },
+    {
+      name: 'more than 64 KiB',
+      body: JSON.stringify({
+        messages: [{
+          id: 'message-oversized',
+          role: 'user',
+          parts: [{ type: 'text', text: 'x'.repeat(64 * 1_024) }],
+        }],
+      }),
+    },
+  ])('returns a deliberate 400 for $name', async ({ body }) => {
+    const response = await POST(
+      new Request('https://playground.test/api/chat', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          [GATEWAY_HEADER]: gatewayAssertion,
+        },
+        body,
+      }),
+    );
+
+    expect(response.status).toBe(400);
+    expect(response.headers.get('cache-control')).toBe('no-store');
+    await expect(response.json()).resolves.toEqual({
+      error: 'The chat request body is invalid or exceeds 64 KiB.',
+    });
+    expect(model.doStreamCalls).toHaveLength(0);
+    expect(mocks.startFactory).not.toHaveBeenCalled();
+  });
 });

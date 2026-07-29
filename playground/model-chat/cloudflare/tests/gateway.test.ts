@@ -7,7 +7,7 @@ import {
   normalizeModelRuntime,
   protectedUpstreamRequest,
 } from "../src/gateway";
-import { admitOnce, validChatRequestId, type TransactionalStorage } from "../src/admission";
+import { validChatRequestId } from "../src/admission";
 import { MODEL_CHAT_INSTANCE_NAME } from "../src/container-name";
 import { readGatewayAssertion } from "../../lib/gateway-auth";
 
@@ -150,50 +150,33 @@ describe("protected model-chat upstream boundary", () => {
     ) as {
       name: string;
       vars: Record<string, string>;
-      migrations: Array<{ tag: string; new_sqlite_classes: string[] }>;
+      durable_objects: {
+        bindings: Array<{ name: string; class_name: string }>;
+      };
+      migrations: Array<{
+        tag: string;
+        new_sqlite_classes?: string[];
+        deleted_classes?: string[];
+      }>;
     };
     expect(config.name).toBe("vercel-ai-sdk-nimble-v2-playground");
-    expect(config.vars).toMatchObject({
+    expect(config.vars).toEqual({
       AUTH_EMPLOYEE_ENABLED: "true",
       SPEND_GRANT_EPOCH: "pr11-native-v2-review:1",
-      AUTH_RP_ID: "vercel-ai-sdk-nimble-v2-playground.kadosh.workers.dev",
-      AGENT_AUTH_KEY_ID: "e1720965dfcdfb07992ce256",
-      AGENT_AUTH_WORKSPACE_ID: "vercel-ai-sdk-nimble-v2-playground",
     });
+    expect(config.durable_objects.bindings).not.toContainEqual(
+      expect.objectContaining({ name: "CHAT_ADMISSION" }),
+    );
     expect(config.migrations).toEqual([
       { tag: "v1", new_sqlite_classes: ["AdminAuthState"] },
       { tag: "v2", new_sqlite_classes: ["ModelChatContainer"] },
       { tag: "v3", new_sqlite_classes: ["ChatAdmissionState"] },
+      { tag: "v4", deleted_classes: ["ChatAdmissionState"] },
     ]);
   });
 
   it("reuses one stable container identity across image deployments", () => {
     expect(MODEL_CHAT_INSTANCE_NAME).toBe("model-chat-v1");
-  });
-
-  it("admits exactly one concurrent request and permanently rejects replay", async () => {
-    const values = new Map<string, unknown>();
-    let queue = Promise.resolve();
-    const storage: TransactionalStorage = {
-      transaction<T>(closure: (transaction: {
-        get<V>(key: string): Promise<V | undefined>;
-        put(key: string, value: unknown): Promise<void>;
-      }) => Promise<T>): Promise<T> {
-        const operation = queue.then(() =>
-          closure({
-            async get<V>(key: string) { return values.get(key) as V | undefined; },
-            async put(key: string, value: unknown) { values.set(key, value); },
-          }),
-        );
-        queue = operation.then(() => undefined, () => undefined);
-        return operation;
-      },
-    };
-
-    const concurrent = await Promise.all([admitOnce(storage), admitOnce(storage)]);
-    expect(concurrent.sort()).toEqual([false, true]);
-    await expect(admitOnce(storage)).resolves.toBe(false);
-    expect(values.get("admitted")).toMatchObject({ retryAllowed: false });
   });
 
   it("accepts only client-generated UUID v4 request IDs", () => {

@@ -6,7 +6,9 @@ import {
   type AuthEnv,
 } from "../src/auth";
 
-const ORIGIN = "https://vercel-ai-sdk-nimble-v2-playground.kadosh.workers.dev";
+const ORIGIN = "https://example.test";
+const TEST_AGENT_KEY_ID = "test-agent-key-id";
+const TEST_WORKSPACE_ID = "test-workspace";
 const authNamespace = (env as unknown as AuthEnv).ADMIN_AUTH;
 
 describe("three-lane hosted authentication", () => {
@@ -52,10 +54,10 @@ describe("three-lane hosted authentication", () => {
     ]);
     expect(payload).toMatchObject({
       v: 1,
-      kid: "e1720965dfcdfb07992ce256",
+      kid: TEST_AGENT_KEY_ID,
       origin: ORIGIN,
       next: "/version",
-      workspace_id: "vercel-ai-sdk-nimble-v2-playground",
+      workspace_id: TEST_WORKSPACE_ID,
     });
     expect(payload.exp - payload.iat).toBe(60);
     expect(result.challenge_token).toMatch(/^[A-Za-z0-9_-]{43}$/);
@@ -221,7 +223,7 @@ describe("three-lane hosted authentication", () => {
 
   it("gives an activated agent both session and CSRF cookies for protected posts", async () => {
     const token = "A".repeat(43);
-    const keyId = "e1720965dfcdfb07992ce256";
+    const keyId = TEST_AGENT_KEY_ID;
     const stub = authNamespace.get(authNamespace.idFromName("admin"));
     await runInDurableObject(stub, async (instance: AdminAuthState) => {
       await instance.beginAgentActivation(

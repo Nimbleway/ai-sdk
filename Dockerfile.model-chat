@@ -1,4 +1,7 @@
-FROM node:22-slim AS build
+# Cloudflare Containers execute linux/amd64 images; keep the build contract
+# explicit so native dependencies are produced for the runtime architecture.
+ARG MODEL_CHAT_PLATFORM=linux/amd64
+FROM --platform=${MODEL_CHAT_PLATFORM} node:22-slim AS build
 
 ENV PNPM_HOME=/pnpm
 ENV PATH=$PNPM_HOME:$PATH
@@ -14,12 +17,14 @@ COPY playground/model-chat ./playground/model-chat
 RUN pnpm install --frozen-lockfile \
     && pnpm --filter @nimble-way/ai-sdk build \
     && pnpm --filter nimble-agent-v2-model-chat build \
+    && pnpm --filter nimble-agent-v2-model-chat deploy --prod --legacy /app/model-chat-runtime \
+    && cp -R /app/playground/model-chat/.next /app/model-chat-runtime/.next \
     && pnpm prune --prod \
-    && /app/node_modules/.pnpm/node_modules/.bin/next --version
+    && /app/model-chat-runtime/node_modules/.bin/next --version
 
-FROM node:22-slim
+FROM --platform=${MODEL_CHAT_PLATFORM} node:22-slim
 ENV NODE_ENV=production
 WORKDIR /app
 COPY --from=build /app /app
 EXPOSE 3211
-CMD ["/app/node_modules/.pnpm/node_modules/.bin/next", "start", "/app/playground/model-chat", "--port", "3211", "--hostname", "0.0.0.0"]
+CMD ["/app/model-chat-runtime/node_modules/.bin/next", "start", "/app/model-chat-runtime", "--port", "3211", "--hostname", "0.0.0.0"]

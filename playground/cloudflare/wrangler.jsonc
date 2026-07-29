@@ -6,10 +6,7 @@
   "compatibility_flags": ["nodejs_compat"],
   "vars": {
     "AUTH_EMPLOYEE_ENABLED": "true",
-    "SPEND_GRANT_EPOCH": "pr11-native-v2-review:1",
-    "AUTH_RP_ID": "vercel-ai-sdk-nimble-v2-playground.kadosh.workers.dev",
-    "AGENT_AUTH_KEY_ID": "e1720965dfcdfb07992ce256",
-    "AGENT_AUTH_WORKSPACE_ID": "vercel-ai-sdk-nimble-v2-playground"
+    "SPEND_GRANT_EPOCH": "pr11-native-v2-review:1"
   },
   "send_email": [
     {
@@ -46,10 +43,10 @@
       "vars": {
         "AUTH_EMPLOYEE_ENABLED": "true",
         "SPEND_GRANT_EPOCH": "pr11-native-v2-review:1",
-        "AUTH_RP_ID": "vercel-ai-sdk-nimble-v2-playground.kadosh.workers.dev",
-        "AGENT_AUTH_KEY_ID": "e1720965dfcdfb07992ce256",
-        "AGENT_AUTH_PUBLIC_KEY": "BDC4xPgSDYnE0g9_BTJxpBVlZnibIc1o23SKBJ5KVdzmLO8MkK-nqT4JGFhClbivSpmqcvOTC_WfxCsidPgKiD8",
-        "AGENT_AUTH_WORKSPACE_ID": "vercel-ai-sdk-nimble-v2-playground",
+        "AUTH_RP_ID": "example.test",
+        "AGENT_AUTH_KEY_ID": "test-agent-key-id",
+        "AGENT_AUTH_PUBLIC_KEY": "test-agent-public-key-not-real",
+        "AGENT_AUTH_WORKSPACE_ID": "test-workspace",
         "ADMIN_EMAIL": "admin@example.test",
         "ADMIN_PASSKEY": "test-bootstrap-not-a-real-secret",
         "ADMIN_SESSION_SECRET": "test-session-secret-not-real"
