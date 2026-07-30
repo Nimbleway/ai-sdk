@@ -26,9 +26,36 @@ const authNamespace = (env as unknown as AuthEnv).ADMIN_AUTH;
 const CREATE_DIAGNOSTIC_STORAGE_KEY = "create-diagnostic-current";
 const DIAGNOSTIC_REQUEST_ID = "c9b7ff04-3c76-4f68-8d8b-2ccdbf07cb60";
 const OTHER_DIAGNOSTIC_REQUEST_ID = "d45bca83-42cb-46af-a248-03c74af09c97";
+const THIRD_DIAGNOSTIC_REQUEST_ID = "ef961d5a-5793-478d-b8ba-0dc2e4df2fe4";
 const DIAGNOSTIC_SID = "S".repeat(43);
 const OTHER_DIAGNOSTIC_SID = "T".repeat(43);
 const DIAGNOSTIC_GRANT = "G".repeat(43);
+const NEXT_DIAGNOSTIC_GRANT = "H".repeat(43);
+
+type TestDiagnosticSlot = {
+  requestId: string;
+  sidDigest: string;
+  expiresAt: number;
+  state?: Record<string, unknown>;
+};
+
+function diagnosticSlots(value: unknown): TestDiagnosticSlot[] {
+  if (!Array.isArray(value)) {
+    throw new Error("expected diagnostic slot collection");
+  }
+  return value as TestDiagnosticSlot[];
+}
+
+function diagnosticSlot(
+  value: unknown,
+  requestId = DIAGNOSTIC_REQUEST_ID,
+): TestDiagnosticSlot {
+  const slot = diagnosticSlots(value).find(
+    (candidate) => candidate.requestId === requestId,
+  );
+  if (!slot) throw new Error("expected diagnostic request slot");
+  return slot;
+}
 
 const b64 = (bytes: Uint8Array) =>
   btoa(String.fromCharCode(...bytes))
@@ -206,12 +233,24 @@ async function diagnosticReadFixture(): Promise<DiagnosticReadFixture> {
         now + 15 * 60,
       ),
     ).resolves.toBe(true);
-    await state.storage.put(CREATE_DIAGNOSTIC_STORAGE_KEY, {
+    const stored = await state.storage.get(CREATE_DIAGNOSTIC_STORAGE_KEY);
+    const slots = diagnosticSlots(stored);
+    diagnosticSlot(slots).state = {
       ...receipt,
       sidDigest: await sidDigest(session.sid),
       sequence: 1,
       cleared: false,
-    });
+    };
+    await state.storage.put(CREATE_DIAGNOSTIC_STORAGE_KEY, slots);
+    await expect(
+      instance.issueSpendGrant(
+        "diagnostic-read:2",
+        session.sid,
+        NEXT_DIAGNOSTIC_GRANT,
+        now + 5 * 60,
+        now,
+      ),
+    ).resolves.toBe(true);
   });
   return { stub, authEnv, session, receipt };
 }
@@ -580,6 +619,407 @@ describe("three-lane hosted authentication", () => {
       );
     });
 
+    it("retains an admitted request through the next generation and its late terminal callback", async () => {
+      const now = 15_000;
+      const stub = authNamespace.get(authNamespace.newUniqueId());
+      await runInDurableObject(stub, async (instance: AdminAuthState) => {
+        const digest = await bindDiagnosticGrant(instance, { now });
+        await expect(
+          instance.recordCreateDiagnostic(
+            digest,
+            DIAGNOSTIC_REQUEST_ID,
+            1,
+            createDiagnosticEvent({
+              correlationId: DIAGNOSTIC_REQUEST_ID,
+              phase: "outbound_post_attempt",
+            }),
+            now,
+          ),
+        ).resolves.toBe(true);
+
+        await expect(
+          instance.issueSpendGrant(
+            "diagnostic:2",
+            DIAGNOSTIC_SID,
+            NEXT_DIAGNOSTIC_GRANT,
+            now + 5 * 60,
+            now + 1,
+          ),
+        ).resolves.toBe(true);
+        await expect(
+          instance.consumeSpendGrant(
+            "diagnostic:2",
+            DIAGNOSTIC_SID,
+            NEXT_DIAGNOSTIC_GRANT,
+            now + 2,
+            OTHER_DIAGNOSTIC_REQUEST_ID,
+            now + 15 * 60,
+          ),
+        ).resolves.toBe(true);
+
+        await expect(
+          instance.recordCreateDiagnostic(
+            digest,
+            DIAGNOSTIC_REQUEST_ID,
+            2,
+            createDiagnosticEvent({
+              correlationId: DIAGNOSTIC_REQUEST_ID,
+              phase: "provider_response",
+              httpStatus: 422,
+            }),
+            now + 3,
+          ),
+        ).resolves.toBe(true);
+        await expect(
+          instance.recordCreateDiagnostic(
+            digest,
+            OTHER_DIAGNOSTIC_REQUEST_ID,
+            1,
+            createDiagnosticEvent({
+              correlationId: OTHER_DIAGNOSTIC_REQUEST_ID,
+              phase: "transport_ambiguity",
+            }),
+            now + 3,
+          ),
+        ).resolves.toBe(true);
+
+        await expect(
+          instance.readCreateDiagnostic(
+            DIAGNOSTIC_SID,
+            DIAGNOSTIC_REQUEST_ID,
+            now + 3,
+          ),
+        ).resolves.toMatchObject({
+          kind: "receipt",
+          receipt: {
+            phase: "provider_response",
+            httpStatus: 422,
+            expiresAt: now + CREATE_DIAGNOSTIC_RETENTION_SECONDS,
+          },
+        });
+        await expect(
+          instance.readCreateDiagnostic(
+            DIAGNOSTIC_SID,
+            OTHER_DIAGNOSTIC_REQUEST_ID,
+            now + 3,
+          ),
+        ).resolves.toMatchObject({
+          kind: "receipt",
+          receipt: { phase: "transport_ambiguity" },
+        });
+        await expect(
+          instance.clearCreateDiagnostic(
+            digest,
+            DIAGNOSTIC_REQUEST_ID,
+            3,
+            now + 4,
+          ),
+        ).resolves.toBe(true);
+        await expect(
+          instance.readCreateDiagnostic(
+            DIAGNOSTIC_SID,
+            DIAGNOSTIC_REQUEST_ID,
+            now + 4,
+          ),
+        ).resolves.toEqual({ kind: "none" });
+        await expect(
+          instance.recordCreateDiagnostic(
+            digest,
+            DIAGNOSTIC_REQUEST_ID,
+            4,
+            createDiagnosticEvent({
+              correlationId: DIAGNOSTIC_REQUEST_ID,
+              phase: "provider_response",
+              httpStatus: 200,
+            }),
+            now + 4,
+          ),
+        ).resolves.toBe(false);
+        await expect(
+          instance.clearCreateDiagnostic(
+            digest,
+            DIAGNOSTIC_REQUEST_ID,
+            4,
+            now + 4,
+          ),
+        ).resolves.toBe(false);
+        await expect(
+          instance.readCreateDiagnostic(
+            DIAGNOSTIC_SID,
+            OTHER_DIAGNOSTIC_REQUEST_ID,
+            now + 4,
+          ),
+        ).resolves.toMatchObject({
+          kind: "receipt",
+          receipt: { phase: "transport_ambiguity" },
+        });
+      });
+    });
+
+    it("atomically binds one request for one grant without erasing earlier diagnostics", async () => {
+      const now = 17_000;
+      const stub = authNamespace.get(authNamespace.newUniqueId());
+      await runInDurableObject(stub, async (instance: AdminAuthState) => {
+        const digest = await bindDiagnosticGrant(instance, { now });
+        await expect(
+          instance.recordCreateDiagnostic(
+            digest,
+            DIAGNOSTIC_REQUEST_ID,
+            1,
+            createDiagnosticEvent({
+              correlationId: DIAGNOSTIC_REQUEST_ID,
+              phase: "provider_response",
+              httpStatus: 429,
+            }),
+            now,
+          ),
+        ).resolves.toBe(true);
+        await expect(
+          instance.issueSpendGrant(
+            "diagnostic:2",
+            DIAGNOSTIC_SID,
+            NEXT_DIAGNOSTIC_GRANT,
+            now + 5 * 60,
+            now + 1,
+          ),
+        ).resolves.toBe(true);
+
+        const consumed = await Promise.all([
+          instance.consumeSpendGrant(
+            "diagnostic:2",
+            DIAGNOSTIC_SID,
+            NEXT_DIAGNOSTIC_GRANT,
+            now + 1,
+            OTHER_DIAGNOSTIC_REQUEST_ID,
+            now + 15 * 60,
+          ),
+          instance.consumeSpendGrant(
+            "diagnostic:2",
+            DIAGNOSTIC_SID,
+            NEXT_DIAGNOSTIC_GRANT,
+            now + 1,
+            THIRD_DIAGNOSTIC_REQUEST_ID,
+            now + 15 * 60,
+          ),
+        ]);
+        expect(consumed.filter(Boolean)).toHaveLength(1);
+        const winner = consumed[0]
+          ? OTHER_DIAGNOSTIC_REQUEST_ID
+          : THIRD_DIAGNOSTIC_REQUEST_ID;
+        const loser = consumed[0]
+          ? THIRD_DIAGNOSTIC_REQUEST_ID
+          : OTHER_DIAGNOSTIC_REQUEST_ID;
+
+        await expect(
+          instance.readCreateDiagnostic(
+            DIAGNOSTIC_SID,
+            winner,
+            now + 1,
+          ),
+        ).resolves.toEqual({ kind: "none" });
+        await expect(
+          instance.readCreateDiagnostic(
+            DIAGNOSTIC_SID,
+            loser,
+            now + 1,
+          ),
+        ).resolves.toEqual({ kind: "denied" });
+        await expect(
+          instance.readCreateDiagnostic(
+            DIAGNOSTIC_SID,
+            DIAGNOSTIC_REQUEST_ID,
+            now + 1,
+          ),
+        ).resolves.toMatchObject({
+          kind: "receipt",
+          receipt: { httpStatus: 429 },
+        });
+      });
+    });
+
+    it("rejects active request-ID reuse before consuming the next grant", async () => {
+      const now = 19_000;
+      const stub = authNamespace.get(authNamespace.newUniqueId());
+      await runInDurableObject(stub, async (instance: AdminAuthState) => {
+        await bindDiagnosticGrant(instance, { now });
+        await expect(
+          instance.issueSpendGrant(
+            "diagnostic:2",
+            DIAGNOSTIC_SID,
+            NEXT_DIAGNOSTIC_GRANT,
+            now + 5 * 60,
+            now + 1,
+          ),
+        ).resolves.toBe(true);
+        await expect(
+          instance.consumeSpendGrant(
+            "diagnostic:2",
+            DIAGNOSTIC_SID,
+            NEXT_DIAGNOSTIC_GRANT,
+            now + 1,
+            DIAGNOSTIC_REQUEST_ID,
+            now + 15 * 60,
+          ),
+        ).resolves.toBe(false);
+        await expect(
+          instance.consumeSpendGrant(
+            "diagnostic:2",
+            DIAGNOSTIC_SID,
+            NEXT_DIAGNOSTIC_GRANT,
+            now + 1,
+            OTHER_DIAGNOSTIC_REQUEST_ID,
+            now + 15 * 60,
+          ),
+        ).resolves.toBe(true);
+        await expect(
+          instance.readCreateDiagnostic(
+            DIAGNOSTIC_SID,
+            OTHER_DIAGNOSTIC_REQUEST_ID,
+            now + 1,
+          ),
+        ).resolves.toEqual({ kind: "none" });
+      });
+    });
+
+    it("scopes duplicate request IDs to the authenticated SID digest", async () => {
+      const now = 19_250;
+      const stub = authNamespace.get(authNamespace.newUniqueId());
+      await runInDurableObject(stub, async (instance: AdminAuthState) => {
+        const firstDigest = await bindDiagnosticGrant(instance, { now });
+        await expect(
+          instance.recordCreateDiagnostic(
+            firstDigest,
+            DIAGNOSTIC_REQUEST_ID,
+            1,
+            createDiagnosticEvent({
+              correlationId: DIAGNOSTIC_REQUEST_ID,
+              phase: "provider_response",
+              httpStatus: 422,
+            }),
+            now,
+          ),
+        ).resolves.toBe(true);
+
+        await expect(
+          instance.issueSpendGrant(
+            "diagnostic:2",
+            OTHER_DIAGNOSTIC_SID,
+            NEXT_DIAGNOSTIC_GRANT,
+            now + 5 * 60,
+            now + 1,
+          ),
+        ).resolves.toBe(true);
+        await expect(
+          instance.consumeSpendGrant(
+            "diagnostic:2",
+            OTHER_DIAGNOSTIC_SID,
+            NEXT_DIAGNOSTIC_GRANT,
+            now + 1,
+            DIAGNOSTIC_REQUEST_ID,
+            now + 15 * 60,
+          ),
+        ).resolves.toBe(true);
+        const secondDigest = await sidDigest(OTHER_DIAGNOSTIC_SID);
+        await expect(
+          instance.recordCreateDiagnostic(
+            secondDigest,
+            DIAGNOSTIC_REQUEST_ID,
+            1,
+            createDiagnosticEvent({
+              correlationId: DIAGNOSTIC_REQUEST_ID,
+              phase: "provider_response",
+              httpStatus: 503,
+            }),
+            now + 1,
+          ),
+        ).resolves.toBe(true);
+
+        await expect(
+          instance.readCreateDiagnostic(
+            DIAGNOSTIC_SID,
+            DIAGNOSTIC_REQUEST_ID,
+            now + 1,
+          ),
+        ).resolves.toMatchObject({
+          kind: "receipt",
+          receipt: { httpStatus: 422 },
+        });
+        await expect(
+          instance.readCreateDiagnostic(
+            OTHER_DIAGNOSTIC_SID,
+            DIAGNOSTIC_REQUEST_ID,
+            now + 1,
+          ),
+        ).resolves.toMatchObject({
+          kind: "receipt",
+          receipt: { httpStatus: 503 },
+        });
+      });
+    });
+
+    it("fails closed at bounded diagnostic capacity before consuming the overflow grant", async () => {
+      const now = 19_500;
+      const stub = authNamespace.get(authNamespace.newUniqueId());
+      await runInDurableObject(
+        stub,
+        async (instance: AdminAuthState, state) => {
+          for (let index = 1; index <= 16; index += 1) {
+            const grant = String.fromCharCode(64 + index).repeat(43);
+            const requestId =
+              `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`;
+            await expect(
+              instance.issueSpendGrant(
+                `capacity:${index}`,
+                DIAGNOSTIC_SID,
+                grant,
+                now + 5 * 60,
+                now,
+              ),
+            ).resolves.toBe(true);
+            await expect(
+              instance.consumeSpendGrant(
+                `capacity:${index}`,
+                DIAGNOSTIC_SID,
+                grant,
+                now,
+                requestId,
+                now + 15 * 60,
+              ),
+            ).resolves.toBe(true);
+          }
+
+          const overflowGrant = "Z".repeat(43);
+          await expect(
+            instance.issueSpendGrant(
+              "capacity:17",
+              DIAGNOSTIC_SID,
+              overflowGrant,
+              now + 5 * 60,
+              now,
+            ),
+          ).resolves.toBe(true);
+          await expect(
+            instance.consumeSpendGrant(
+              "capacity:17",
+              DIAGNOSTIC_SID,
+              overflowGrant,
+              now,
+              "00000000-0000-4000-8000-000000000017",
+              now + 15 * 60,
+            ),
+          ).resolves.toBe(false);
+          expect(
+            diagnosticSlots(
+              await state.storage.get(CREATE_DIAGNOSTIC_STORAGE_KEY),
+            ),
+          ).toHaveLength(16);
+          await expect(
+            state.storage.get("spend-grant-current"),
+          ).resolves.toMatchObject({ consumed: false });
+        },
+      );
+    });
+
     it("allows phase upgrades but rejects downgrades and conflicting terminal phases", async () => {
       const now = 20_000;
       const stub = authNamespace.get(authNamespace.newUniqueId());
@@ -718,9 +1158,10 @@ describe("three-lane hosted authentication", () => {
               now,
             ),
           ).resolves.toBe(true);
-          await expect(
-            state.storage.get(CREATE_DIAGNOSTIC_STORAGE_KEY),
-          ).resolves.toMatchObject({
+          const stored = await state.storage.get(
+            CREATE_DIAGNOSTIC_STORAGE_KEY,
+          );
+          expect(diagnosticSlot(stored).state).toMatchObject({
             sidDigest: digest,
             correlationId: DIAGNOSTIC_REQUEST_ID,
             sequence: 2,
@@ -729,6 +1170,38 @@ describe("three-lane hosted authentication", () => {
             expiresAt: now + CREATE_DIAGNOSTIC_RETENTION_SECONDS,
           });
           expect(await state.storage.getAlarm()).not.toBeNull();
+          await expect(
+            instance.issueSpendGrant(
+              "diagnostic:2",
+              DIAGNOSTIC_SID,
+              NEXT_DIAGNOSTIC_GRANT,
+              now + 5 * 60,
+              now,
+            ),
+          ).resolves.toBe(true);
+          await expect(
+            instance.consumeSpendGrant(
+              "diagnostic:2",
+              DIAGNOSTIC_SID,
+              NEXT_DIAGNOSTIC_GRANT,
+              now,
+              OTHER_DIAGNOSTIC_REQUEST_ID,
+              now + 15 * 60,
+            ),
+          ).resolves.toBe(true);
+          await expect(
+            instance.recordCreateDiagnostic(
+              digest,
+              OTHER_DIAGNOSTIC_REQUEST_ID,
+              1,
+              createDiagnosticEvent({
+                correlationId: OTHER_DIAGNOSTIC_REQUEST_ID,
+                phase: "provider_response",
+                httpStatus: 202,
+              }),
+              now,
+            ),
+          ).resolves.toBe(true);
           await expect(
             instance.readCreateDiagnostic(
               DIAGNOSTIC_SID,
@@ -758,6 +1231,16 @@ describe("three-lane hosted authentication", () => {
               now + 1,
             ),
           ).resolves.toBe(false);
+          await expect(
+            instance.readCreateDiagnostic(
+              DIAGNOSTIC_SID,
+              OTHER_DIAGNOSTIC_REQUEST_ID,
+              now + 1,
+            ),
+          ).resolves.toMatchObject({
+            kind: "receipt",
+            receipt: { httpStatus: 202 },
+          });
         },
       );
     });
@@ -777,19 +1260,20 @@ describe("three-lane hosted authentication", () => {
               now,
             ),
           ).resolves.toBe(true);
-          const stored = await state.storage.get<Record<string, unknown>>(
+          const stored = await state.storage.get<unknown>(
             CREATE_DIAGNOSTIC_STORAGE_KEY,
           );
-          if (!stored) throw new Error("expected diagnostic tombstone");
-          expect(stored).toMatchObject({
+          const slot = diagnosticSlot(stored);
+          expect(slot.state).toMatchObject({
             correlationId: DIAGNOSTIC_REQUEST_ID,
             sequence: 1,
             cleared: true,
           });
-          await state.storage.put(CREATE_DIAGNOSTIC_STORAGE_KEY, {
-            ...stored,
-            expiresAt: Math.floor(Date.now() / 1_000),
-          });
+          slot.expiresAt = Math.floor(Date.now() / 1_000);
+          await state.storage.put(
+            CREATE_DIAGNOSTIC_STORAGE_KEY,
+            diagnosticSlots(stored),
+          );
         },
       );
 
@@ -870,16 +1354,83 @@ describe("three-lane hosted authentication", () => {
               now,
             ),
           ).resolves.toBe(true);
-          const stored = await state.storage.get<Record<string, unknown>>(
+          const stored = await state.storage.get<unknown>(
             CREATE_DIAGNOSTIC_STORAGE_KEY,
           );
           expect(stored).toBeDefined();
-          await state.storage.put(CREATE_DIAGNOSTIC_STORAGE_KEY, {
-            ...stored,
-            expiresAt: Math.floor(Date.now() / 1_000),
-          });
+          diagnosticSlot(stored).expiresAt = Math.floor(Date.now() / 1_000);
+          await state.storage.put(
+            CREATE_DIAGNOSTIC_STORAGE_KEY,
+            diagnosticSlots(stored),
+          );
         },
       );
+
+      await expect(runDurableObjectAlarm(stub)).resolves.toBe(true);
+      await runInDurableObject(stub, async (_instance, state) => {
+        expect(
+          await state.storage.get(CREATE_DIAGNOSTIC_STORAGE_KEY),
+        ).toBeUndefined();
+        expect(await state.storage.getAlarm()).toBeNull();
+      });
+    });
+
+    it("prunes only expired request slots and re-arms for the earliest survivor", async () => {
+      const now = Math.floor(Date.now() / 1_000);
+      const stub = authNamespace.get(authNamespace.newUniqueId());
+      await runInDurableObject(
+        stub,
+        async (instance: AdminAuthState, state) => {
+          await bindDiagnosticGrant(instance, {
+            now,
+            sessionExpiresAt: now + 30,
+          });
+          await expect(
+            instance.issueSpendGrant(
+              "diagnostic:2",
+              DIAGNOSTIC_SID,
+              NEXT_DIAGNOSTIC_GRANT,
+              now + 5 * 60,
+              now,
+            ),
+          ).resolves.toBe(true);
+          await expect(
+            instance.consumeSpendGrant(
+              "diagnostic:2",
+              DIAGNOSTIC_SID,
+              NEXT_DIAGNOSTIC_GRANT,
+              now,
+              OTHER_DIAGNOSTIC_REQUEST_ID,
+              now + 60,
+            ),
+          ).resolves.toBe(true);
+          const stored = await state.storage.get(
+            CREATE_DIAGNOSTIC_STORAGE_KEY,
+          );
+          const slots = diagnosticSlots(stored);
+          diagnosticSlot(slots).expiresAt = now;
+          diagnosticSlot(slots, OTHER_DIAGNOSTIC_REQUEST_ID).expiresAt =
+            now + 60;
+          await state.storage.put(CREATE_DIAGNOSTIC_STORAGE_KEY, slots);
+        },
+      );
+
+      await expect(runDurableObjectAlarm(stub)).resolves.toBe(true);
+      await runInDurableObject(stub, async (_instance, state) => {
+        const stored = await state.storage.get(
+          CREATE_DIAGNOSTIC_STORAGE_KEY,
+        );
+        expect(diagnosticSlots(stored).map((slot) => slot.requestId)).toEqual([
+          OTHER_DIAGNOSTIC_REQUEST_ID,
+        ]);
+        expect(await state.storage.getAlarm()).toBe((now + 60) * 1_000);
+        diagnosticSlot(stored, OTHER_DIAGNOSTIC_REQUEST_ID).expiresAt =
+          Math.floor(Date.now() / 1_000);
+        await state.storage.put(
+          CREATE_DIAGNOSTIC_STORAGE_KEY,
+          diagnosticSlots(stored),
+        );
+      });
 
       await expect(runDurableObjectAlarm(stub)).resolves.toBe(true);
       await runInDurableObject(stub, async (_instance, state) => {
@@ -929,9 +1480,10 @@ describe("three-lane hosted authentication", () => {
               now,
             ),
           ).resolves.toBe(false);
-          expect(
-            await state.storage.get(CREATE_DIAGNOSTIC_STORAGE_KEY),
-          ).toBeUndefined();
+          const pending = await state.storage.get(
+            CREATE_DIAGNOSTIC_STORAGE_KEY,
+          );
+          expect(diagnosticSlot(pending).state).toBeUndefined();
 
           await expect(
             instance.recordCreateDiagnostic(
@@ -942,11 +1494,18 @@ describe("three-lane hosted authentication", () => {
               now,
             ),
           ).resolves.toBe(true);
-          const stored = await state.storage.get<Record<string, unknown>>(
+          const stored = await state.storage.get<unknown>(
             CREATE_DIAGNOSTIC_STORAGE_KEY,
           );
           expect(stored).toBeDefined();
-          expect(Object.keys(stored!).sort()).toEqual([
+          const slot = diagnosticSlot(stored);
+          expect(Object.keys(slot).sort()).toEqual([
+            "expiresAt",
+            "requestId",
+            "sidDigest",
+            "state",
+          ]);
+          expect(Object.keys(slot.state!).sort()).toEqual([
             "cleared",
             "correlationId",
             "expiresAt",
@@ -960,8 +1519,8 @@ describe("three-lane hosted authentication", () => {
             "sequence",
             "sidDigest",
           ]);
-          expect(stored?.sidDigest).toBe(digest);
-          expect(stored?.sidDigest).not.toBe(DIAGNOSTIC_SID);
+          expect(slot.sidDigest).toBe(digest);
+          expect(slot.sidDigest).not.toBe(DIAGNOSTIC_SID);
           const serialized = JSON.stringify(stored);
           expect(serialized).not.toContain(DIAGNOSTIC_SID);
           expect(serialized).not.toContain(DIAGNOSTIC_GRANT);
@@ -992,8 +1551,12 @@ describe("three-lane hosted authentication", () => {
     it("returns an authenticated empty 204 when no durable receipt exists", async () => {
       const fixture = await diagnosticReadFixture();
       await runInDurableObject(fixture.stub, async (_instance, state) => {
-        await state.storage.delete(CREATE_DIAGNOSTIC_STORAGE_KEY);
-        await state.storage.deleteAlarm();
+        const stored = await state.storage.get(
+          CREATE_DIAGNOSTIC_STORAGE_KEY,
+        );
+        const slots = diagnosticSlots(stored);
+        delete diagnosticSlot(slots).state;
+        await state.storage.put(CREATE_DIAGNOSTIC_STORAGE_KEY, slots);
       });
 
       const response = await authenticate(

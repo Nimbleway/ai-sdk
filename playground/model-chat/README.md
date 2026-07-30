@@ -61,16 +61,19 @@ optional numeric HTTP status or fixed local reason, and
 `retryCreateAutomatically: false`. It never copies prompts, tool inputs,
 schemas, result or provider prose, reasoning, error messages, stacks, headers,
 cookies, keys, or the raw session ID. The existing `AdminAuthState` stores at
-most the last durable receipt. Monotonic callback sequence numbers and an
-invisible success tombstone reject delayed or replayed phase updates. Both
-receipts and tombstones physically expire after ten minutes or at session
-expiry, whichever comes first. A CSRF-protected read returns a receipt only to
-the same registered agent session, and returns an empty `204` to that session
-when no receipt exists; every other principal or request ID receives `404`. The
-browser renders `receipt`, authenticated `none`, and `unread` as distinct
-states. If a callback itself fails, the UI can show only the last phase durably
-recorded before that failure, and warns against resubmission when no receipt can
-be established. Diagnostic recording does not add a create retry path.
+most 16 active request slots and fails closed before consuming a new grant when
+that bound is full. Each slot is written atomically with its consumed grant and
+keeps a fixed expiry even when a later spend epoch is issued or consumed.
+Monotonic callback sequence numbers and an invisible success tombstone reject
+delayed or replayed phase updates per request. Bindings, receipts, and
+tombstones physically expire after ten minutes or at session expiry, whichever
+comes first. A CSRF-protected read returns a receipt only to the same registered
+agent session, and returns an empty `204` to that session when no receipt
+exists; every other principal or request ID receives `404`. The browser renders
+`receipt`, authenticated `none`, and `unread` as distinct states. If a callback
+itself fails, the UI can show only the last phase durably recorded before that
+failure, and warns against resubmission when no receipt can be established.
+Diagnostic recording does not add a create retry path.
 
 Configure one model provider (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, or
 `OPENROUTER_API_KEY`). The deployment-specific `AUTH_RP_ID`,

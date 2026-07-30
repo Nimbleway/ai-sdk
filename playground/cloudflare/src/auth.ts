@@ -52,6 +52,7 @@ const RATE_BUCKET_CAPACITY = 128;
 const OTP_CHALLENGE_CAPACITY = 128;
 const SPEND_GRANT_SECONDS = 5 * 60;
 const CREATE_DIAGNOSTIC_STORAGE_KEY = "create-diagnostic-current";
+const CREATE_DIAGNOSTIC_CAPACITY = 16;
 const SPEND_INTEGRATION = "vercel-ai-sdk-agent-v2";
 const AUTH_CHALLENGE_SECONDS = 5 * 60;
 const AUTH_CHALLENGE_CAPACITY = 32;
@@ -140,8 +141,6 @@ interface StoredSpendGrant {
   grantDigest: string;
   expiresAt: number;
   consumed: boolean;
-  requestId?: string;
-  sessionExpiresAt?: number;
 }
 
 type StoredCreateDiagnosticReceipt = CreateDiagnosticReceipt & {
@@ -163,10 +162,39 @@ type StoredCreateDiagnosticState =
   | StoredCreateDiagnosticReceipt
   | StoredCreateDiagnosticTombstone;
 
+type StoredCreateDiagnosticSlot = {
+  requestId: string;
+  sidDigest: string;
+  expiresAt: number;
+  state?: StoredCreateDiagnosticState;
+};
+
 type CreateDiagnosticLookup =
   | { kind: "receipt"; receipt: CreateDiagnosticReceipt }
   | { kind: "none" }
   | { kind: "denied" };
+
+function activeCreateDiagnosticSlots(
+  value: unknown,
+  now: number,
+): StoredCreateDiagnosticSlot[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter(
+    (slot): slot is StoredCreateDiagnosticSlot =>
+      Boolean(slot) &&
+      typeof slot === "object" &&
+      CHAT_REQUEST_ID_PATTERN.test(String(slot.requestId || "")) &&
+      /^[A-Za-z0-9_-]{43}$/.test(String(slot.sidDigest || "")) &&
+      Number.isInteger(slot.expiresAt) &&
+      Number(slot.expiresAt) > now,
+  );
+}
+
+function nextCreateDiagnosticExpiry(
+  slots: StoredCreateDiagnosticSlot[],
+): number {
+  return Math.min(...slots.map((slot) => slot.expiresAt));
+}
 
 export class AdminAuthState extends DurableObject<AuthEnv> {
   async allowOtpRequest(emailDigest: string, sourceDigest: string, now: number): Promise<boolean> {
@@ -270,18 +298,40 @@ export class AdminAuthState extends DurableObject<AuthEnv> {
         !same(record.sidDigest, sidDigest) ||
         !same(record.grantDigest, grantDigest)
       ) return false;
-      record.consumed = true;
       if (bindsChatRequest) {
-        record.requestId = requestId;
-        record.sessionExpiresAt = sessionExpiresAt;
-        const diagnostic = await transaction.get(
-          CREATE_DIAGNOSTIC_STORAGE_KEY,
+        const slots = activeCreateDiagnosticSlots(
+          await transaction.get<unknown>(
+            CREATE_DIAGNOSTIC_STORAGE_KEY,
+          ),
+          now,
         );
-        if (diagnostic !== undefined) {
-          await transaction.delete(CREATE_DIAGNOSTIC_STORAGE_KEY);
-          await transaction.deleteAlarm();
+        if (
+          slots.length >= CREATE_DIAGNOSTIC_CAPACITY ||
+          slots.some(
+            (slot) =>
+              slot.requestId === requestId &&
+              same(slot.sidDigest, sidDigest),
+          )
+        ) {
+          return false;
         }
+        slots.push({
+          requestId: requestId!,
+          sidDigest,
+          expiresAt: Math.min(
+            Number(sessionExpiresAt),
+            now + CREATE_DIAGNOSTIC_RETENTION_SECONDS,
+          ),
+        });
+        await transaction.put(
+          CREATE_DIAGNOSTIC_STORAGE_KEY,
+          slots,
+        );
+        await transaction.setAlarm(
+          nextCreateDiagnosticExpiry(slots) * 1_000,
+        );
       }
+      record.consumed = true;
       await transaction.put(key, record);
       return true;
     });
@@ -313,51 +363,54 @@ export class AdminAuthState extends DurableObject<AuthEnv> {
     };
     return this.ctx.storage.transaction(
       async (transaction): Promise<boolean> => {
-        const spend = await transaction.get<StoredSpendGrant>(
-          "spend-grant-current",
-        );
-        if (
-          !spend ||
-          !spend.consumed ||
-          spend.requestId !== requestId ||
-          !spend.sessionExpiresAt ||
-          spend.sessionExpiresAt <= now ||
-          !same(spend.sidDigest, sidDigest)
-        ) {
-          return false;
-        }
-        let stored = await transaction.get<StoredCreateDiagnosticState>(
+        const storedSlots = await transaction.get<unknown>(
           CREATE_DIAGNOSTIC_STORAGE_KEY,
         );
-        if (stored && stored.expiresAt <= now) {
-          await transaction.delete(CREATE_DIAGNOSTIC_STORAGE_KEY);
-          stored = undefined;
+        const slots = activeCreateDiagnosticSlots(storedSlots, now);
+        const pruned =
+          !Array.isArray(storedSlots) ||
+          storedSlots.length !== slots.length;
+        const persist = async () => {
+          if (slots.length === 0) {
+            await transaction.delete(CREATE_DIAGNOSTIC_STORAGE_KEY);
+            await transaction.deleteAlarm();
+            return;
+          }
+          await transaction.put(CREATE_DIAGNOSTIC_STORAGE_KEY, slots);
+          await transaction.setAlarm(
+            nextCreateDiagnosticExpiry(slots) * 1_000,
+          );
+        };
+        const slot = slots.find(
+          (candidate) =>
+            candidate.requestId === requestId &&
+            same(candidate.sidDigest, sidDigest),
+        );
+        if (!slot) {
+          if (pruned) await persist();
+          return false;
         }
+        const stored = slot.state;
         if (
           stored &&
-          (stored.correlationId !== requestId ||
-            !same(stored.sidDigest, sidDigest) ||
-            stored.cleared ||
+          (stored.cleared ||
             sequence <= stored.sequence ||
             phaseRank[stored.phase] > phaseRank[event.phase] ||
             (phaseRank[stored.phase] === phaseRank[event.phase] &&
               stored.phase !== event.phase))
         ) {
+          if (pruned) await persist();
           return false;
         }
-        const receiptExpiresAt = Math.min(
-          spend.sessionExpiresAt,
-          now + CREATE_DIAGNOSTIC_RETENTION_SECONDS,
-        );
-        await transaction.put(CREATE_DIAGNOSTIC_STORAGE_KEY, {
+        slot.state = {
           ...event,
           sidDigest,
           sequence,
           cleared: false,
           observedAt: now,
-          expiresAt: receiptExpiresAt,
-        } satisfies StoredCreateDiagnosticReceipt);
-        await transaction.setAlarm(receiptExpiresAt * 1_000);
+          expiresAt: slot.expiresAt,
+        } satisfies StoredCreateDiagnosticReceipt;
+        await persist();
         return true;
       },
     );
@@ -378,48 +431,51 @@ export class AdminAuthState extends DurableObject<AuthEnv> {
       now <= 0
     ) return false;
     const cleared = await this.ctx.storage.transaction(async (transaction) => {
-      const spend = await transaction.get<StoredSpendGrant>(
-        "spend-grant-current",
-      );
-      if (
-        !spend ||
-        !spend.consumed ||
-        spend.requestId !== requestId ||
-        !spend.sessionExpiresAt ||
-        spend.sessionExpiresAt <= now ||
-        !same(spend.sidDigest, sidDigest)
-      ) {
-        return false;
-      }
-      let stored = await transaction.get<StoredCreateDiagnosticState>(
+      const storedSlots = await transaction.get<unknown>(
         CREATE_DIAGNOSTIC_STORAGE_KEY,
       );
-      if (stored && stored.expiresAt <= now) {
-        await transaction.delete(CREATE_DIAGNOSTIC_STORAGE_KEY);
-        stored = undefined;
-      }
-      if (
-        stored &&
-        (stored.correlationId !== requestId ||
-          !same(stored.sidDigest, sidDigest) ||
-          stored.cleared ||
-          sequence <= stored.sequence)
-      ) {
+      const slots = activeCreateDiagnosticSlots(storedSlots, now);
+      const pruned =
+        !Array.isArray(storedSlots) ||
+        storedSlots.length !== slots.length;
+      const persist = async () => {
+        if (slots.length === 0) {
+          await transaction.delete(CREATE_DIAGNOSTIC_STORAGE_KEY);
+          await transaction.deleteAlarm();
+          return;
+        }
+        await transaction.put(CREATE_DIAGNOSTIC_STORAGE_KEY, slots);
+        await transaction.setAlarm(
+          nextCreateDiagnosticExpiry(slots) * 1_000,
+        );
+      };
+      const slot = slots.find(
+        (candidate) =>
+          candidate.requestId === requestId &&
+          same(candidate.sidDigest, sidDigest),
+      );
+      if (!slot) {
+        if (pruned) await persist();
         return false;
       }
-      const receiptExpiresAt = Math.min(
-        spend.sessionExpiresAt,
-        now + CREATE_DIAGNOSTIC_RETENTION_SECONDS,
-      );
-      await transaction.put(CREATE_DIAGNOSTIC_STORAGE_KEY, {
+      const stored = slot.state;
+      if (
+        stored &&
+        (stored.cleared ||
+          sequence <= stored.sequence)
+      ) {
+        if (pruned) await persist();
+        return false;
+      }
+      slot.state = {
         sidDigest,
         correlationId: requestId,
         sequence,
         cleared: true,
         observedAt: now,
-        expiresAt: receiptExpiresAt,
-      } satisfies StoredCreateDiagnosticTombstone);
-      await transaction.setAlarm(receiptExpiresAt * 1_000);
+        expiresAt: slot.expiresAt,
+      } satisfies StoredCreateDiagnosticTombstone;
+      await persist();
       return true;
     });
     return cleared;
@@ -437,27 +493,33 @@ export class AdminAuthState extends DurableObject<AuthEnv> {
     ) return { kind: "denied" };
     const sidDigest = await digest(sid);
     return this.ctx.storage.transaction(async (transaction) => {
-      const spend = await transaction.get<StoredSpendGrant>(
-        "spend-grant-current",
-      );
-      let stored = await transaction.get<StoredCreateDiagnosticState>(
+      const storedSlots = await transaction.get<unknown>(
         CREATE_DIAGNOSTIC_STORAGE_KEY,
       );
-      if (stored && stored.expiresAt <= now) {
-        await transaction.delete(CREATE_DIAGNOSTIC_STORAGE_KEY);
-        await transaction.deleteAlarm();
-        stored = undefined;
-      }
+      const slots = activeCreateDiagnosticSlots(storedSlots, now);
       if (
-        !spend ||
-        !spend.consumed ||
-        spend.requestId !== requestId ||
-        !spend.sessionExpiresAt ||
-        spend.sessionExpiresAt <= now ||
-        !same(spend.sidDigest, sidDigest)
+        !Array.isArray(storedSlots) ||
+        storedSlots.length !== slots.length
       ) {
+        if (slots.length === 0) {
+          await transaction.delete(CREATE_DIAGNOSTIC_STORAGE_KEY);
+          await transaction.deleteAlarm();
+        } else {
+          await transaction.put(CREATE_DIAGNOSTIC_STORAGE_KEY, slots);
+          await transaction.setAlarm(
+            nextCreateDiagnosticExpiry(slots) * 1_000,
+          );
+        }
+      }
+      const slot = slots.find(
+        (candidate) =>
+          candidate.requestId === requestId &&
+          same(candidate.sidDigest, sidDigest),
+      );
+      if (!slot) {
         return { kind: "denied" };
       }
+      const stored = slot.state;
       if (!stored) return { kind: "none" };
       if (
         stored.correlationId !== requestId ||
@@ -476,16 +538,24 @@ export class AdminAuthState extends DurableObject<AuthEnv> {
     });
   }
   async alarm(): Promise<void> {
-    const stored = await this.ctx.storage.get<StoredCreateDiagnosticState>(
-      CREATE_DIAGNOSTIC_STORAGE_KEY,
+    const slots = activeCreateDiagnosticSlots(
+      await this.ctx.storage.get<unknown>(
+        CREATE_DIAGNOSTIC_STORAGE_KEY,
+      ),
+      Math.floor(Date.now() / 1_000),
     );
-    if (!stored) return;
-    const now = Math.floor(Date.now() / 1_000);
-    if (stored.expiresAt <= now) {
+    if (slots.length === 0) {
       await this.ctx.storage.delete(CREATE_DIAGNOSTIC_STORAGE_KEY);
+      await this.ctx.storage.deleteAlarm();
       return;
     }
-    await this.ctx.storage.setAlarm(stored.expiresAt * 1_000);
+    await this.ctx.storage.put(
+      CREATE_DIAGNOSTIC_STORAGE_KEY,
+      slots,
+    );
+    await this.ctx.storage.setAlarm(
+      nextCreateDiagnosticExpiry(slots) * 1_000,
+    );
   }
   async consumeSpendGrantAndReserveDirectRun(
     epoch: string,
