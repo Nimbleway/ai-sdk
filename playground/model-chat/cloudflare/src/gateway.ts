@@ -1,3 +1,9 @@
+import {
+  verifyDiagnosticCallbackBody,
+  type CreateDiagnosticCallbackBody,
+  type CreateDiagnosticEvent,
+} from "../../lib/create-diagnostics";
+
 export const ORIGIN_ASSERTION_HEADER = "x-playground-origin-assertion";
 const LEGACY_ORIGIN_AUTH_HEADER = "x-playground-gateway-auth";
 const encoder = new TextEncoder();
@@ -74,6 +80,71 @@ export async function admitConfiguredLiveCreate(
     return "runtime-unready";
   }
   return await consume() ? "authorized" : "unavailable";
+}
+
+export interface CreateDiagnosticState {
+  recordCreateDiagnostic(
+    sidDigest: string,
+    requestId: string,
+    sequence: number,
+    event: CreateDiagnosticEvent,
+    now: number,
+  ): Promise<boolean>;
+  clearCreateDiagnostic(
+    sidDigest: string,
+    requestId: string,
+    sequence: number,
+    now: number,
+  ): Promise<boolean>;
+}
+
+export async function handleCreateDiagnosticCallback(
+  body: CreateDiagnosticCallbackBody | null,
+  runtime: NormalizedModelRuntime,
+  state: CreateDiagnosticState,
+  now = Math.floor(Date.now() / 1_000),
+): Promise<Response> {
+  if (!body || !runtime.originSecret || !runtime.audience) {
+    return new Response(null, {
+      status: 404,
+      headers: { "cache-control": "no-store" },
+    });
+  }
+  const callback = await verifyDiagnosticCallbackBody({
+    body,
+    secret: runtime.originSecret,
+    audience: runtime.audience,
+    now,
+  });
+  if (!callback) {
+    return new Response(null, {
+      status: 404,
+      headers: { "cache-control": "no-store" },
+    });
+  }
+  let accepted = false;
+  if (callback.action === "record") {
+    if (callback.event) {
+      accepted = await state.recordCreateDiagnostic(
+        callback.sidDigest,
+        callback.correlationId,
+        callback.sequence,
+        callback.event,
+        now,
+      );
+    }
+  } else {
+    accepted = await state.clearCreateDiagnostic(
+      callback.sidDigest,
+      callback.correlationId,
+      callback.sequence,
+      now,
+    );
+  }
+  return new Response(null, {
+    status: accepted ? 204 : 404,
+    headers: { "cache-control": "no-store" },
+  });
 }
 
 const b64 = (bytes: Uint8Array) =>

@@ -14,7 +14,15 @@ import {
 } from '../lib/presentation';
 import { POST } from '../app/api/chat/route';
 import { csrfTokenFromCookie } from '../lib/browser-auth';
+import {
+  CREATE_DIAGNOSTIC_SCHEMA,
+  type CreateDiagnosticEvent,
+  type CreateDiagnosticReporter,
+} from '../lib/create-diagnostics';
 import { newChatRequestId } from '../lib/request-id';
+
+const GENERATED_AGENT_CREATE_URL =
+  'https://sdk.nimbleway.com/v2/agents/runs';
 
 describe('model chat Agent V2 policy', () => {
   it('exposes exactly the start/status/result lifecycle', () => {
@@ -188,6 +196,546 @@ describe('model chat Agent V2 policy', () => {
     expect(second).toBe(first);
     await expect(second).rejects.toBe(createError);
     expect(startExecute).toHaveBeenCalledOnce();
+  });
+
+  describe('request-scoped create diagnostics', () => {
+    const correlationId = 'c9b7ff04-3c76-4f68-8d8b-2ccdbf07cb60';
+
+    it('records a local schema rejection without invoking create or fetch', async () => {
+      const startExecute = vi.fn(async () => ({
+        runId: 'task_run_one',
+        agentId: 'wsa_one',
+      }));
+      const baseFetch = vi.fn(async () => new Response(null, { status: 202 }));
+      const events: CreateDiagnosticEvent[] = [];
+      const diagnostics: CreateDiagnosticReporter = {
+        correlationId,
+        baseFetch: baseFetch as unknown as typeof fetch,
+        report: vi.fn(async (event) => {
+          events.push(event);
+          return true;
+        }),
+        clear: vi.fn(async () => true),
+      };
+      const tools = buildAgentTools(
+        'nimble_request_key',
+        {
+          start: vi.fn(() => ({ execute: startExecute })),
+          status: vi.fn(() => ({ execute: vi.fn() })),
+          result: vi.fn(() => ({ execute: vi.fn() })),
+        } as never,
+        diagnostics,
+      ) as unknown as Record<string, Executable>;
+
+      const error = await tools.startResearch
+        .execute(
+          {
+            task: 'private-prompt-canary',
+            outputSchema: { private_field: 'schema-canary' },
+          },
+          {},
+        )
+        .catch((caught: unknown) => caught);
+
+      expect(error).toBeInstanceOf(Error);
+      expect(String(error)).not.toContain('private-prompt-canary');
+      expect(String(error)).not.toContain('schema-canary');
+      expect(startExecute).not.toHaveBeenCalled();
+      expect(baseFetch).not.toHaveBeenCalled();
+      expect(diagnostics.clear).not.toHaveBeenCalled();
+      expect(events).toEqual([
+        {
+          schema: CREATE_DIAGNOSTIC_SCHEMA,
+          correlationId,
+          phase: 'pre_network_rejection',
+          providerPostAttempted: false,
+          providerResponseReceived: false,
+          retryCreateAutomatically: false,
+          localReason: 'schema_validation',
+        },
+      ]);
+    });
+
+    it('rejects an unexpected intercepted request before invoking the provider transport', async () => {
+      const baseFetch = vi.fn(async () => new Response(null, { status: 202 }));
+      const events: CreateDiagnosticEvent[] = [];
+      const diagnostics: CreateDiagnosticReporter = {
+        correlationId,
+        baseFetch: baseFetch as unknown as typeof fetch,
+        report: vi.fn(async (event) => {
+          events.push(event);
+          return true;
+        }),
+        clear: vi.fn(async () => true),
+      };
+      const underlyingCreate = vi.fn(async (providerFetch: typeof fetch) => {
+        await providerFetch('https://sdk.nimbleway.com/v2/agents/runs/unexpected', {
+          method: 'POST',
+        });
+        return { runId: 'task_run_one', agentId: 'wsa_one' };
+      });
+      const tools = buildAgentTools(
+        'nimble_request_key',
+        {
+          start: vi.fn(
+            (config: { clientOptions?: { fetch?: typeof fetch } }) => ({
+              execute: () => underlyingCreate(config.clientOptions!.fetch!),
+            }),
+          ),
+          status: vi.fn(() => ({ execute: vi.fn() })),
+          result: vi.fn(() => ({ execute: vi.fn() })),
+        } as never,
+        diagnostics,
+      ) as unknown as Record<string, Executable>;
+
+      const first = tools.startResearch.execute({ task: 'one' }, {});
+      const repeated = tools.startResearch.execute({ task: 'duplicate' }, {});
+      expect(repeated).toBe(first);
+      const error = await first.catch((caught: unknown) => caught);
+      await expect(repeated).rejects.toBe(error);
+
+      expect(error).toBeInstanceOf(Error);
+      expect(String(error)).toContain('"phase":"pre_network_rejection"');
+      expect(String(error)).toContain('"localReason":"sdk_local_rejection"');
+      expect(String(error)).toContain('"providerPostAttempted":false');
+      expect(underlyingCreate).toHaveBeenCalledOnce();
+      expect(baseFetch).not.toHaveBeenCalled();
+      expect(diagnostics.clear).not.toHaveBeenCalled();
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({
+        phase: 'pre_network_rejection',
+        providerPostAttempted: false,
+        providerResponseReceived: false,
+      });
+    });
+
+    it('records outbound and 202 response, then clears once after one successful create', async () => {
+      const operations: string[] = [];
+      const baseFetch = vi.fn(async () => {
+        operations.push('provider-fetch');
+        return new Response(null, { status: 202 });
+      });
+      const events: CreateDiagnosticEvent[] = [];
+      const diagnostics: CreateDiagnosticReporter = {
+        correlationId,
+        baseFetch: baseFetch as unknown as typeof fetch,
+        report: vi.fn(async (event) => {
+          events.push(event);
+          operations.push(`report:${event.phase}`);
+          return true;
+        }),
+        clear: vi.fn(async () => {
+          operations.push('clear');
+          return true;
+        }),
+      };
+      const created = { runId: 'task_run_one', agentId: 'wsa_one' };
+      const underlyingCreate = vi.fn(
+        async (
+          providerFetch: typeof fetch,
+          input: Record<string, unknown>,
+        ): Promise<Record<string, unknown>> => {
+          const response = await providerFetch(
+            GENERATED_AGENT_CREATE_URL,
+            {
+              method: 'POST',
+              body: JSON.stringify(input),
+            },
+          );
+          expect(response.status).toBe(202);
+          return created;
+        },
+      );
+      const startFactory = vi.fn(
+        (config: { clientOptions?: { fetch?: typeof fetch } }) => ({
+          execute: (input: Record<string, unknown>) =>
+            underlyingCreate(config.clientOptions!.fetch!, input),
+        }),
+      );
+      const tools = buildAgentTools(
+        'nimble_request_key',
+        {
+          start: startFactory,
+          status: vi.fn(() => ({ execute: vi.fn() })),
+          result: vi.fn(() => ({ execute: vi.fn() })),
+        } as never,
+        diagnostics,
+      ) as unknown as Record<string, Executable>;
+
+      const first = tools.startResearch.execute({ task: 'one' }, {});
+      const repeated = tools.startResearch.execute({ task: 'duplicate' }, {});
+      expect(repeated).toBe(first);
+      await expect(first).resolves.toEqual(created);
+      await expect(repeated).resolves.toEqual(created);
+
+      expect(underlyingCreate).toHaveBeenCalledOnce();
+      expect(baseFetch).toHaveBeenCalledOnce();
+      expect(diagnostics.clear).toHaveBeenCalledOnce();
+      expect(operations).toEqual([
+        'provider-fetch',
+        'report:outbound_post_attempt',
+        'report:provider_response',
+        'clear',
+      ]);
+      expect(events).toEqual([
+        {
+          schema: CREATE_DIAGNOSTIC_SCHEMA,
+          correlationId,
+          phase: 'outbound_post_attempt',
+          providerPostAttempted: true,
+          providerResponseReceived: false,
+          retryCreateAutomatically: false,
+        },
+        {
+          schema: CREATE_DIAGNOSTIC_SCHEMA,
+          correlationId,
+          phase: 'provider_response',
+          providerPostAttempted: true,
+          providerResponseReceived: true,
+          retryCreateAutomatically: false,
+          httpStatus: 202,
+        },
+      ]);
+    });
+
+    it('observes the released SDK generated-agent POST at the expected endpoint', async () => {
+      let captured: Request | undefined;
+      const baseFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        captured = new Request(input, init);
+        return new Response(
+          JSON.stringify({
+            id: 'task_run_11111111-1111-4111-8111-111111111111',
+            interaction_id: 'interaction_11111111-1111-4111-8111-111111111111',
+            status: 'queued',
+            is_active: true,
+            effort: 'low',
+            created_at: '2026-07-22T10:00:00Z',
+            web_search_agent_id: 'wsa_11111111-1111-4111-8111-111111111111',
+          }),
+          {
+            status: 202,
+            headers: { 'content-type': 'application/json' },
+          },
+        );
+      });
+      const events: CreateDiagnosticEvent[] = [];
+      const diagnostics: CreateDiagnosticReporter = {
+        correlationId,
+        baseFetch: baseFetch as unknown as typeof fetch,
+        report: vi.fn(async (event) => {
+          events.push(event);
+          return true;
+        }),
+        clear: vi.fn(async () => true),
+      };
+      const tools = buildAgentTools(
+        'nimble_request_key',
+        undefined,
+        diagnostics,
+      ) as unknown as Record<string, Executable>;
+
+      await expect(
+        tools.startResearch.execute({ task: 'one bounded research task' }, {}),
+      ).resolves.toMatchObject({
+        runId: 'task_run_11111111-1111-4111-8111-111111111111',
+        agentId: 'wsa_11111111-1111-4111-8111-111111111111',
+        status: 'queued',
+        effort: 'low',
+      });
+
+      expect(baseFetch).toHaveBeenCalledOnce();
+      expect(captured).toBeDefined();
+      expect(captured!.method).toBe('POST');
+      expect(captured!.url).toBe(GENERATED_AGENT_CREATE_URL);
+      expect(events.map((event) => event.phase)).toEqual([
+        'outbound_post_attempt',
+        'provider_response',
+      ]);
+      expect(diagnostics.clear).toHaveBeenCalledOnce();
+    });
+
+    it('keeps the last durable phase candid when terminal reporting and clear fail', async () => {
+      const baseFetch = vi.fn(async () => new Response(null, { status: 202 }));
+      const durableEvents: CreateDiagnosticEvent[] = [];
+      const report = vi.fn(async (event: CreateDiagnosticEvent) => {
+        if (event.phase === 'provider_response') return false;
+        durableEvents.push(event);
+        return true;
+      });
+      const clear = vi.fn(async () => {
+        throw new Error('diagnostic-clear-canary');
+      });
+      const diagnostics: CreateDiagnosticReporter = {
+        correlationId,
+        baseFetch: baseFetch as unknown as typeof fetch,
+        report,
+        clear,
+      };
+      const underlyingCreate = vi.fn(
+        async (
+          providerFetch: typeof fetch,
+          input: Record<string, unknown>,
+        ): Promise<Record<string, unknown>> => {
+          await providerFetch(GENERATED_AGENT_CREATE_URL, {
+            method: 'POST',
+            body: JSON.stringify(input),
+          });
+          return { runId: 'task_run_one', agentId: 'wsa_one' };
+        },
+      );
+      const startFactory = vi.fn(
+        (config: { clientOptions?: { fetch?: typeof fetch } }) => ({
+          execute: (input: Record<string, unknown>) =>
+            underlyingCreate(config.clientOptions!.fetch!, input),
+        }),
+      );
+      const tools = buildAgentTools(
+        'nimble_request_key',
+        {
+          start: startFactory,
+          status: vi.fn(() => ({ execute: vi.fn() })),
+          result: vi.fn(() => ({ execute: vi.fn() })),
+        } as never,
+        diagnostics,
+      ) as unknown as Record<string, Executable>;
+
+      const first = tools.startResearch.execute(
+        { task: 'private-prompt-canary' },
+        {},
+      );
+      const repeated = tools.startResearch.execute(
+        { task: 'different-duplicate' },
+        {},
+      );
+      expect(repeated).toBe(first);
+      await expect(first).resolves.toEqual({
+        runId: 'task_run_one',
+        agentId: 'wsa_one',
+      });
+      await expect(repeated).resolves.toEqual({
+        runId: 'task_run_one',
+        agentId: 'wsa_one',
+      });
+
+      expect(underlyingCreate).toHaveBeenCalledOnce();
+      expect(baseFetch).toHaveBeenCalledOnce();
+      expect(report).toHaveBeenCalledTimes(2);
+      expect(clear).toHaveBeenCalledOnce();
+      expect(durableEvents).toEqual([
+        {
+          schema: CREATE_DIAGNOSTIC_SCHEMA,
+          correlationId,
+          phase: 'outbound_post_attempt',
+          providerPostAttempted: true,
+          providerResponseReceived: false,
+          retryCreateAutomatically: false,
+        },
+      ]);
+      expect(JSON.stringify(durableEvents)).not.toContain(
+        'private-prompt-canary',
+      );
+      expect(JSON.stringify(durableEvents)).not.toContain(
+        'diagnostic-clear-canary',
+      );
+    });
+
+    it('records a structured provider response and makes one create POST under repeats', async () => {
+      const baseFetch = vi.fn(async () =>
+        new Response(
+          JSON.stringify({
+            detail: 'provider-body-canary',
+            echoed_input: 'private-prompt-canary',
+          }),
+          {
+            status: 422,
+            headers: { 'content-type': 'application/json' },
+          },
+        ),
+      );
+      const events: CreateDiagnosticEvent[] = [];
+      const diagnostics: CreateDiagnosticReporter = {
+        correlationId,
+        baseFetch: baseFetch as unknown as typeof fetch,
+        report: vi.fn(async (event) => {
+          events.push(event);
+          return true;
+        }),
+        clear: vi.fn(async () => true),
+      };
+      const underlyingCreate = vi.fn(
+        async (
+          providerFetch: typeof fetch,
+          input: Record<string, unknown>,
+        ): Promise<Record<string, unknown>> => {
+          const response = await providerFetch(
+            GENERATED_AGENT_CREATE_URL,
+            {
+              method: 'POST',
+              headers: {
+                authorization: 'Bearer nimble-secret-canary',
+                'content-type': 'application/json',
+              },
+              body: JSON.stringify(input),
+            },
+          );
+          if (!response.ok) {
+            throw new Error(
+              `provider rejected private-prompt-canary: ${await response.text()}`,
+            );
+          }
+          return { runId: 'task_run_one', agentId: 'wsa_one' };
+        },
+      );
+      const startFactory = vi.fn(
+        (config: { clientOptions?: { fetch?: typeof fetch } }) => ({
+          execute: (input: Record<string, unknown>) =>
+            underlyingCreate(config.clientOptions!.fetch!, input),
+        }),
+      );
+      const tools = buildAgentTools(
+        'nimble_request_key',
+        {
+          start: startFactory,
+          status: vi.fn(() => ({ execute: vi.fn() })),
+          result: vi.fn(() => ({ execute: vi.fn() })),
+        } as never,
+        diagnostics,
+      ) as unknown as Record<string, Executable>;
+
+      const first = tools.startResearch.execute(
+        { task: 'private-prompt-canary' },
+        {},
+      );
+      const repeated = tools.startResearch.execute(
+        { task: 'different-duplicate' },
+        {},
+      );
+      expect(repeated).toBe(first);
+      const error = await first.catch((caught: unknown) => caught);
+      await expect(repeated).rejects.toBe(error);
+
+      expect(error).toBeInstanceOf(Error);
+      expect(String(error)).toContain('"phase":"provider_response"');
+      expect(String(error)).toContain('"httpStatus":422');
+      expect(String(error)).not.toContain('provider-body-canary');
+      expect(String(error)).not.toContain('private-prompt-canary');
+      expect(String(error)).not.toContain('nimble-secret-canary');
+      expect(underlyingCreate).toHaveBeenCalledOnce();
+      expect(baseFetch).toHaveBeenCalledOnce();
+      expect(baseFetch).toHaveBeenCalledWith(
+        expect.objectContaining({
+          method: 'POST',
+          url: GENERATED_AGENT_CREATE_URL,
+        }),
+      );
+      expect(diagnostics.clear).not.toHaveBeenCalled();
+      expect(events).toEqual([
+        {
+          schema: CREATE_DIAGNOSTIC_SCHEMA,
+          correlationId,
+          phase: 'outbound_post_attempt',
+          providerPostAttempted: true,
+          providerResponseReceived: false,
+          retryCreateAutomatically: false,
+        },
+        {
+          schema: CREATE_DIAGNOSTIC_SCHEMA,
+          correlationId,
+          phase: 'provider_response',
+          providerPostAttempted: true,
+          providerResponseReceived: true,
+          retryCreateAutomatically: false,
+          httpStatus: 422,
+        },
+      ]);
+    });
+
+    it('records transport ambiguity and never repeats the underlying create or fetch', async () => {
+      const baseFetch = vi.fn(async () => {
+        throw new TypeError('socket-reset-canary');
+      });
+      const events: CreateDiagnosticEvent[] = [];
+      const durableEvents: CreateDiagnosticEvent[] = [];
+      const diagnostics: CreateDiagnosticReporter = {
+        correlationId,
+        baseFetch: baseFetch as unknown as typeof fetch,
+        report: vi.fn(async (event) => {
+          events.push(event);
+          if (event.phase === 'transport_ambiguity') return false;
+          durableEvents.push(event);
+          return true;
+        }),
+        clear: vi.fn(async () => true),
+      };
+      const underlyingCreate = vi.fn(
+        async (
+          providerFetch: typeof fetch,
+          input: Record<string, unknown>,
+        ): Promise<Record<string, unknown>> => {
+          await providerFetch(GENERATED_AGENT_CREATE_URL, {
+            method: 'POST',
+            body: JSON.stringify(input),
+          });
+          return { runId: 'task_run_one', agentId: 'wsa_one' };
+        },
+      );
+      const startFactory = vi.fn(
+        (config: { clientOptions?: { fetch?: typeof fetch } }) => ({
+          execute: (input: Record<string, unknown>) =>
+            underlyingCreate(config.clientOptions!.fetch!, input),
+        }),
+      );
+      const tools = buildAgentTools(
+        'nimble_request_key',
+        {
+          start: startFactory,
+          status: vi.fn(() => ({ execute: vi.fn() })),
+          result: vi.fn(() => ({ execute: vi.fn() })),
+        } as never,
+        diagnostics,
+      ) as unknown as Record<string, Executable>;
+
+      const first = tools.startResearch.execute(
+        { task: 'private-prompt-canary' },
+        {},
+      );
+      const repeated = tools.startResearch.execute(
+        { task: 'different-duplicate' },
+        {},
+      );
+      expect(repeated).toBe(first);
+      const error = await first.catch((caught: unknown) => caught);
+      await expect(repeated).rejects.toBe(error);
+
+      expect(error).toBeInstanceOf(Error);
+      expect(String(error)).toContain('"phase":"transport_ambiguity"');
+      expect(String(error)).not.toContain('socket-reset-canary');
+      expect(String(error)).not.toContain('private-prompt-canary');
+      expect(underlyingCreate).toHaveBeenCalledOnce();
+      expect(baseFetch).toHaveBeenCalledOnce();
+      expect(diagnostics.clear).not.toHaveBeenCalled();
+      expect(events).toEqual([
+        {
+          schema: CREATE_DIAGNOSTIC_SCHEMA,
+          correlationId,
+          phase: 'outbound_post_attempt',
+          providerPostAttempted: true,
+          providerResponseReceived: false,
+          retryCreateAutomatically: false,
+        },
+        {
+          schema: CREATE_DIAGNOSTIC_SCHEMA,
+          correlationId,
+          phase: 'transport_ambiguity',
+          providerPostAttempted: true,
+          providerResponseReceived: false,
+          retryCreateAutomatically: false,
+        },
+      ]);
+      expect(durableEvents.map((event) => event.phase)).toEqual([
+        'outbound_post_attempt',
+      ]);
+    });
   });
 
   it('fails closed on unsupported, oversized, or mismatched structured inputs', async () => {

@@ -13,6 +13,11 @@ import {
 } from '../lib/presentation';
 import { csrfTokenFromCookie } from '../lib/browser-auth';
 import { CHAT_REQUEST_ID_HEADER, newChatRequestId } from '../lib/request-id';
+import {
+  classifyCreateDiagnosticRead,
+  CREATE_DIAGNOSTIC_READ_PATH,
+  type CreateDiagnosticReadOutcome,
+} from '../lib/create-diagnostics';
 
 type ToolPart = {
   type: string;
@@ -130,13 +135,50 @@ export default function Page() {
   const [input, setInput] = useState('');
   const [authorizing, setAuthorizing] = useState(false);
   const [authorizationError, setAuthorizationError] = useState<string | undefined>();
+  const [diagnosticRead, setDiagnosticRead] =
+    useState<CreateDiagnosticReadOutcome | undefined>();
   const busy = authorizing || status === 'submitted' || status === 'streaming';
+
+  async function readCreateDiagnostic(correlationId: string) {
+    const csrf = csrfTokenFromCookie(document.cookie);
+    if (!csrf) {
+      setDiagnosticRead({ kind: 'unread', correlationId });
+      return;
+    }
+    try {
+      const response = await fetch(CREATE_DIAGNOSTIC_READ_PATH, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-csrf-token': csrf,
+        },
+        body: JSON.stringify({ requestId: correlationId }),
+        cache: 'no-store',
+        signal: AbortSignal.timeout(2_000),
+      });
+      const body =
+        response.status === 200
+          ? await response.json().catch(() => undefined)
+          : undefined;
+      setDiagnosticRead(
+        classifyCreateDiagnosticRead({
+          correlationId,
+          httpStatus: response.status,
+          body,
+        }),
+      );
+    } catch {
+      setDiagnosticRead({ kind: 'unread', correlationId });
+    }
+  }
 
   async function submit(text: string) {
     const task = text.trim();
     if (!task || busy) return;
     setAuthorizing(true);
     setAuthorizationError(undefined);
+    setDiagnosticRead(undefined);
+    let correlationId: string | undefined;
     try {
       if (!spendAuthorized.current) {
         const csrf = csrfTokenFromCookie(document.cookie);
@@ -159,7 +201,8 @@ export default function Page() {
         }
         spendAuthorized.current = true;
       }
-      requestId.current = newChatRequestId();
+      correlationId = newChatRequestId();
+      requestId.current = correlationId;
       await sendMessage({ text: task });
       setInput('');
     } catch (error) {
@@ -167,6 +210,9 @@ export default function Page() {
         error instanceof Error ? error.message : 'The protected run could not start.',
       );
     } finally {
+      if (correlationId) {
+        await readCreateDiagnostic(correlationId);
+      }
       setAuthorizing(false);
     }
   }
@@ -216,6 +262,67 @@ export default function Page() {
       </section>
 
       {authorizationError && <p className="authorization-error">{authorizationError}</p>}
+      {diagnosticRead?.kind === 'receipt' && (
+        <section className="tool" data-state={diagnosticRead.receipt.phase}>
+          <div className="tool-head">
+            <strong>Last durable create diagnostic</strong>
+            <span>{diagnosticRead.receipt.phase.replaceAll('_', ' ')}</span>
+          </div>
+          <code>{diagnosticRead.correlationId}</code>
+          <p>
+            Last durably recorded phase:{' '}
+            {diagnosticRead.receipt.phase.replaceAll('_', ' ')}
+          </p>
+          <p>
+            Provider POST durably recorded:{' '}
+            {diagnosticRead.receipt.providerPostAttempted ? 'yes' : 'no'} ·
+            provider response durably recorded:{' '}
+            {diagnosticRead.receipt.providerResponseReceived ? 'yes' : 'no'}
+          </p>
+          {diagnosticRead.receipt.httpStatus !== undefined && (
+            <p>
+              Durably recorded provider HTTP status:{' '}
+              {diagnosticRead.receipt.httpStatus}
+            </p>
+          )}
+          {diagnosticRead.receipt.localReason && (
+            <p>
+              Local classification:{' '}
+              {diagnosticRead.receipt.localReason.replaceAll('_', ' ')}
+            </p>
+          )}
+          <p>Automatic create retry: disabled</p>
+        </section>
+      )}
+      {diagnosticRead?.kind === 'none' && (
+        <section className="tool" data-state="no-receipt">
+          <div className="tool-head">
+            <strong>No durable failure receipt</strong>
+            <span>authenticated read complete</span>
+          </div>
+          <code>{diagnosticRead.correlationId}</code>
+          <p>
+            A successful create clears its failure receipt. If this submission
+            did not show durable run and agent IDs, a provider POST may have
+            been sent; do not resubmit.
+          </p>
+          <p>Automatic create retry: disabled</p>
+        </section>
+      )}
+      {diagnosticRead?.kind === 'unread' && (
+        <section className="tool" data-state="unread">
+          <div className="tool-head">
+            <strong>Create diagnostic unread</strong>
+            <span>verification incomplete</span>
+          </div>
+          <code>{diagnosticRead.correlationId}</code>
+          <p>
+            The durable receipt could not be read and verified. Provider create
+            state is unknown; do not resubmit.
+          </p>
+          <p>Automatic create retry: disabled</p>
+        </section>
+      )}
       <form className="composer" onSubmit={(event) => { event.preventDefault(); void submit(input); }}>
         <textarea
           value={input}

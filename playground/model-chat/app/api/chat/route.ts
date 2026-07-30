@@ -6,8 +6,14 @@ import {
   type UIMessage,
 } from 'ai';
 import { buildAgentTools } from '../../../lib/agent-tools';
+import {
+  createDiagnosticEvent,
+  createDiagnosticReporter,
+  validChatRequestId,
+} from '../../../lib/create-diagnostics';
 import { resolveModel } from '../../../lib/model';
 import { readGatewayAssertion } from '../../../lib/gateway-auth';
+import { CHAT_REQUEST_ID_HEADER } from '../../../lib/request-id';
 
 export const runtime = 'nodejs';
 export const maxDuration = 360;
@@ -22,9 +28,10 @@ For an open-ended research request:
    basic bounds. A type may pair with "null". Never use shorthand such as
    {"field":"string"}, references, or composition. Omit outputSchema when a
    structured answer is unnecessary.
-3. Only when the tool explicitly says it rejected input before any Agent API
-   request may you correct the schema or omit it and call startResearch once
-   more. Treat every other start error as terminal. Never retry run creation.
+3. Only when the fixed diagnostic has providerPostAttempted=false and
+   localReason=schema_validation or input_data_without_schema may you correct
+   the schema or omit it and call startResearch once more. Treat every other
+   start error as terminal. Never retry run creation.
 4. Preserve both returned runId and agentId.
 5. Call checkResearch once so the user sees the asynchronous lifecycle.
 6. Call getResearchResult with both ids. It waits with bounded 10-second polling.
@@ -102,6 +109,13 @@ export async function POST(request: Request) {
   if (assertion?.role !== 'agent') {
     return Response.json({ error: 'Unauthorized.' }, { status: 401 });
   }
+  const requestId = request.headers.get(CHAT_REQUEST_ID_HEADER);
+  if (!validChatRequestId(requestId)) {
+    return Response.json(
+      { error: 'A valid chat request ID is required.' },
+      { status: 400, headers: { 'cache-control': 'no-store' } },
+    );
+  }
   const apiKey = configuredNimbleKey();
   if (!apiKey) {
     return Response.json(
@@ -122,7 +136,18 @@ export async function POST(request: Request) {
     return invalidChatRequest();
   }
 
-  const tools = buildAgentTools(apiKey);
+  const originSecret = process.env.PLAYGROUND_GATEWAY_SECRET!.trim();
+  const diagnostics = createDiagnosticReporter({
+    secret: originSecret,
+    audience: assertion.aud,
+    sid: assertion.sid,
+    correlationId: requestId,
+  });
+  const tools = buildAgentTools(
+    apiKey,
+    undefined,
+    diagnostics,
+  );
   try {
     const result = streamText({
       model: resolveModel(),
@@ -130,9 +155,31 @@ export async function POST(request: Request) {
       messages: modelMessages,
       tools,
       stopWhen: stepCountIs(8),
+      onStepFinish: async ({ toolCalls }) => {
+        const invalidStart = toolCalls.some(
+          (call) =>
+            call.toolName === 'startResearch' &&
+            'invalid' in call &&
+            call.invalid === true,
+        );
+        if (invalidStart) {
+          await diagnostics.report(
+            createDiagnosticEvent({
+              correlationId: requestId,
+              phase: 'pre_network_rejection',
+              localReason: 'sdk_local_rejection',
+            }),
+          );
+        }
+      },
     });
     return result.toUIMessageStreamResponse({
-      onError: () => 'The research request failed. Check the protected server logs for details.',
+      headers: {
+        [CHAT_REQUEST_ID_HEADER]: requestId,
+        'cache-control': 'no-store',
+      },
+      onError: () =>
+        `The research request stopped. Diagnostic correlation: ${requestId}.`,
     });
   } catch {
     return Response.json(

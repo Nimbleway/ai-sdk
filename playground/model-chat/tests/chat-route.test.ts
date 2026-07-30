@@ -3,12 +3,16 @@ import { MockLanguageModelV3 } from 'ai/test';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import { GATEWAY_HEADER, signGatewayAssertion } from '../lib/gateway-auth';
+import { CHAT_REQUEST_ID_HEADER } from '../lib/request-id';
 
 const mocks = vi.hoisted(() => ({
   resolveModel: vi.fn(),
   startFactory: vi.fn(),
   statusFactory: vi.fn(),
   resultFactory: vi.fn(),
+  createDiagnosticReporter: vi.fn(),
+  diagnosticReport: vi.fn(),
+  diagnosticClear: vi.fn(),
 }));
 
 vi.mock('../lib/model', () => ({
@@ -21,9 +25,15 @@ vi.mock('@nimble-way/ai-sdk', () => ({
   nimbleAgentRunResult: mocks.resultFactory,
 }));
 
+vi.mock('../lib/create-diagnostics', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../lib/create-diagnostics')>()),
+  createDiagnosticReporter: mocks.createDiagnosticReporter,
+}));
+
 import { POST } from '../app/api/chat/route';
 
 describe('authorized native chat route', () => {
+  const chatRequestId = '123e4567-e89b-42d3-a456-426614174000';
   const previousGatewaySecret = process.env.PLAYGROUND_GATEWAY_SECRET;
   const previousGatewayAudience = process.env.PLAYGROUND_GATEWAY_AUDIENCE;
   const previousNimbleKey = process.env.NIMBLE_API_KEY;
@@ -38,6 +48,14 @@ describe('authorized native chat route', () => {
     process.env.PLAYGROUND_GATEWAY_SECRET = 'origin-only-secret';
     process.env.PLAYGROUND_GATEWAY_AUDIENCE = 'playground.test';
     process.env.NIMBLE_API_KEY = 'deployed-nimble-key';
+    mocks.diagnosticReport.mockResolvedValue(true);
+    mocks.diagnosticClear.mockResolvedValue(true);
+    mocks.createDiagnosticReporter.mockReturnValue({
+      correlationId: chatRequestId,
+      baseFetch: vi.fn(),
+      report: mocks.diagnosticReport,
+      clear: mocks.diagnosticClear,
+    });
     const now = Math.floor(Date.now() / 1_000);
     gatewayAssertion = await signGatewayAssertion('origin-only-secret', {
       role: 'agent',
@@ -187,6 +205,7 @@ describe('authorized native chat route', () => {
         headers: {
           'content-type': 'application/json',
           [GATEWAY_HEADER]: gatewayAssertion,
+          [CHAT_REQUEST_ID_HEADER]: chatRequestId,
           'x-nimble-api-key': 'browser-controlled-key',
         },
         body: JSON.stringify({ messages }),
@@ -196,6 +215,7 @@ describe('authorized native chat route', () => {
     expect(response.status).toBe(200);
     expect(response.headers.get('content-type')).toContain('text/event-stream');
     expect(response.headers.get('x-vercel-ai-ui-message-stream')).toBe('v1');
+    expect(response.headers.get(CHAT_REQUEST_ID_HEADER)).toBe(chatRequestId);
     const stream = await response.text();
     expect(stream).toContain('Final grounded result.');
     expect(stream).toContain('"toolName":"startResearch"');
@@ -212,6 +232,7 @@ describe('authorized native chat route', () => {
     expect(mocks.startFactory).toHaveBeenCalledWith({
       apiKey: 'deployed-nimble-key',
       effort: 'low',
+      clientOptions: { fetch: expect.any(Function) },
     });
     expect(mocks.statusFactory).toHaveBeenCalledWith({ apiKey: 'deployed-nimble-key' });
     expect(mocks.resultFactory).toHaveBeenCalledWith({
@@ -229,6 +250,7 @@ describe('authorized native chat route', () => {
       { runId: 'task_run_1', agentId: 'wsa_1' },
       expect.anything(),
     );
+    expect(mocks.diagnosticClear).toHaveBeenCalledOnce();
   });
 
   it('recovers from a locally rejected schema before the single create', async () => {
@@ -323,6 +345,7 @@ describe('authorized native chat route', () => {
         headers: {
           'content-type': 'application/json',
           [GATEWAY_HEADER]: gatewayAssertion,
+          [CHAT_REQUEST_ID_HEADER]: chatRequestId,
         },
         body: JSON.stringify({
           messages: [{
@@ -350,8 +373,16 @@ describe('authorized native chat route', () => {
     expect(resultExecute).toHaveBeenCalledOnce();
     expect(model.doStreamCalls).toHaveLength(5);
     expect(JSON.stringify(model.doStreamCalls[1]?.prompt)).toContain(
-      'rejected before any Agent API request',
+      'pre_network_rejection',
     );
+    expect(mocks.diagnosticReport).toHaveBeenCalledWith(
+      expect.objectContaining({
+        correlationId: chatRequestId,
+        phase: 'pre_network_rejection',
+        providerPostAttempted: false,
+      }),
+    );
+    expect(mocks.diagnosticClear).toHaveBeenCalledOnce();
   });
 
   it('ignores a browser-controlled key when the deployed key is absent', async () => {
@@ -362,6 +393,7 @@ describe('authorized native chat route', () => {
         headers: {
           'content-type': 'application/json',
           [GATEWAY_HEADER]: gatewayAssertion,
+          [CHAT_REQUEST_ID_HEADER]: chatRequestId,
           'x-nimble-api-key': 'browser-controlled-key',
         },
         body: JSON.stringify({ messages: [] }),
@@ -444,6 +476,7 @@ describe('authorized native chat route', () => {
         headers: {
           'content-type': 'application/json',
           [GATEWAY_HEADER]: gatewayAssertion,
+          [CHAT_REQUEST_ID_HEADER]: chatRequestId,
         },
         body,
       }),

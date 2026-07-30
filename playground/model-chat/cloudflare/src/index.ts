@@ -7,11 +7,16 @@ import {
 } from "../../../cloudflare/src/auth";
 import {
   admitConfiguredLiveCreate,
+  handleCreateDiagnosticCallback,
   isAllowedUpstreamRequest,
   normalizeModelRuntime,
   protectedUpstreamRequest,
   type ModelRuntimeEnvironment,
 } from "./gateway";
+import {
+  CREATE_DIAGNOSTIC_INTERNAL_PATH,
+  type CreateDiagnosticCallbackBody,
+} from "../../lib/create-diagnostics";
 import {
   CHAT_REQUEST_ID_HEADER,
   validChatRequestId,
@@ -67,9 +72,23 @@ export default {
       });
     }
 
+    const url = new URL(request.url);
+    if (url.pathname === CREATE_DIAGNOSTIC_INTERNAL_PATH) {
+      if (request.method !== "POST") {
+        return new Response(null, {
+          status: 404,
+          headers: { "cache-control": "no-store" },
+        });
+      }
+      const body = await readBoundedJson<CreateDiagnosticCallbackBody>(
+        request,
+        4_096,
+      );
+      const state = env.ADMIN_AUTH.get(env.ADMIN_AUTH.idFromName("admin"));
+      return handleCreateDiagnosticCallback(body, runtime, state);
+    }
     const auth = await authenticate(request, env);
     if (auth instanceof Response) return auth;
-    const url = new URL(request.url);
     if (!isAllowedUpstreamRequest(request)) {
       const knownPath =
         url.pathname === "/api/chat" ||
@@ -116,6 +135,8 @@ export default {
           auth.sid,
           auth.spendGrant!.grantId,
           Math.floor(Date.now() / 1000),
+          requestId,
+          auth.expiresAt,
         ),
       );
       if (admission === "unconfigured") {

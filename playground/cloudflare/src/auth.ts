@@ -10,6 +10,13 @@ import {
   type RegistrationResponseJSON,
   type WebAuthnCredential,
 } from "@simplewebauthn/server";
+import {
+  CREATE_DIAGNOSTIC_READ_PATH,
+  CREATE_DIAGNOSTIC_RETENTION_SECONDS,
+  validCreateDiagnosticEvent,
+  type CreateDiagnosticEvent,
+  type CreateDiagnosticReceipt,
+} from "../../model-chat/lib/create-diagnostics";
 
 /**
  * The single administrator this deployment authorizes, read from the
@@ -44,11 +51,14 @@ const OTP_RATE_LIMIT = 5;
 const RATE_BUCKET_CAPACITY = 128;
 const OTP_CHALLENGE_CAPACITY = 128;
 const SPEND_GRANT_SECONDS = 5 * 60;
+const CREATE_DIAGNOSTIC_STORAGE_KEY = "create-diagnostic-current";
 const SPEND_INTEGRATION = "vercel-ai-sdk-agent-v2";
 const AUTH_CHALLENGE_SECONDS = 5 * 60;
 const AUTH_CHALLENGE_CAPACITY = 32;
 const DIRECT_RUN_OWNER_CAPACITY = 16;
 const SPEND_EPOCH_PATTERN = /^[A-Za-z][A-Za-z0-9._-]{0,47}:([1-9][0-9]{0,9})$/;
+const CHAT_REQUEST_ID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function spendEpochGeneration(epoch: string): number | null {
   const match = epoch.match(SPEND_EPOCH_PATTERN);
@@ -123,6 +133,41 @@ export interface SpendGrant {
   expiresAt: number;
 }
 
+interface StoredSpendGrant {
+  epoch: string;
+  generation: number;
+  sidDigest: string;
+  grantDigest: string;
+  expiresAt: number;
+  consumed: boolean;
+  requestId?: string;
+  sessionExpiresAt?: number;
+}
+
+type StoredCreateDiagnosticReceipt = CreateDiagnosticReceipt & {
+  sidDigest: string;
+  sequence: number;
+  cleared: false;
+};
+
+type StoredCreateDiagnosticTombstone = {
+  sidDigest: string;
+  correlationId: string;
+  sequence: number;
+  cleared: true;
+  observedAt: number;
+  expiresAt: number;
+};
+
+type StoredCreateDiagnosticState =
+  | StoredCreateDiagnosticReceipt
+  | StoredCreateDiagnosticTombstone;
+
+type CreateDiagnosticLookup =
+  | { kind: "receipt"; receipt: CreateDiagnosticReceipt }
+  | { kind: "none" }
+  | { kind: "denied" };
+
 export class AdminAuthState extends DurableObject<AuthEnv> {
   async allowOtpRequest(emailDigest: string, sourceDigest: string, now: number): Promise<boolean> {
     const key = "otp-rate-buckets";
@@ -181,7 +226,7 @@ export class AdminAuthState extends DurableObject<AuthEnv> {
       grantDigest: await digest(grantId),
       expiresAt,
       consumed: false,
-    };
+    } satisfies StoredSpendGrant;
     const key = "spend-grant-current";
     const generationKey = "spend-grant-generation";
     return this.ctx.storage.transaction(async (transaction) => {
@@ -197,23 +242,26 @@ export class AdminAuthState extends DurableObject<AuthEnv> {
     sid: string,
     grantId: string,
     now: number,
+    requestId?: string,
+    sessionExpiresAt?: number,
   ): Promise<boolean> {
+    const bindsChatRequest =
+      requestId !== undefined || sessionExpiresAt !== undefined;
     if (
       spendEpochGeneration(epoch) === null ||
       !/^[A-Za-z0-9_-]{43}$/.test(sid) ||
-      !/^[A-Za-z0-9_-]{43}$/.test(grantId)
+      !/^[A-Za-z0-9_-]{43}$/.test(grantId) ||
+      (bindsChatRequest &&
+        (!requestId ||
+          !CHAT_REQUEST_ID_PATTERN.test(requestId) ||
+          !Number.isInteger(sessionExpiresAt) ||
+          Number(sessionExpiresAt) <= now))
     ) return false;
     const sidDigest = await digest(sid);
     const grantDigest = await digest(grantId);
     const key = "spend-grant-current";
-    return this.ctx.storage.transaction(async (transaction) => {
-      const record = await transaction.get<{
-        epoch: string;
-        sidDigest: string;
-        grantDigest: string;
-        expiresAt: number;
-        consumed: boolean;
-      }>(key);
+    const consumed = await this.ctx.storage.transaction(async (transaction) => {
+      const record = await transaction.get<StoredSpendGrant>(key);
       if (
         !record ||
         record.epoch !== epoch ||
@@ -223,9 +271,221 @@ export class AdminAuthState extends DurableObject<AuthEnv> {
         !same(record.grantDigest, grantDigest)
       ) return false;
       record.consumed = true;
+      if (bindsChatRequest) {
+        record.requestId = requestId;
+        record.sessionExpiresAt = sessionExpiresAt;
+        const diagnostic = await transaction.get(
+          CREATE_DIAGNOSTIC_STORAGE_KEY,
+        );
+        if (diagnostic !== undefined) {
+          await transaction.delete(CREATE_DIAGNOSTIC_STORAGE_KEY);
+          await transaction.deleteAlarm();
+        }
+      }
       await transaction.put(key, record);
       return true;
     });
+    return consumed;
+  }
+  async recordCreateDiagnostic(
+    sidDigest: string,
+    requestId: string,
+    sequence: number,
+    event: CreateDiagnosticEvent,
+    now: number,
+  ): Promise<boolean> {
+    if (
+      !/^[A-Za-z0-9_-]{43}$/.test(sidDigest) ||
+      !CHAT_REQUEST_ID_PATTERN.test(requestId) ||
+      !Number.isInteger(sequence) ||
+      sequence < 1 ||
+      sequence > 64 ||
+      !Number.isInteger(now) ||
+      now <= 0 ||
+      !validCreateDiagnosticEvent(event) ||
+      event.correlationId !== requestId
+    ) return false;
+    const phaseRank: Record<CreateDiagnosticEvent["phase"], number> = {
+      pre_network_rejection: 0,
+      outbound_post_attempt: 1,
+      provider_response: 2,
+      transport_ambiguity: 2,
+    };
+    return this.ctx.storage.transaction(
+      async (transaction): Promise<boolean> => {
+        const spend = await transaction.get<StoredSpendGrant>(
+          "spend-grant-current",
+        );
+        if (
+          !spend ||
+          !spend.consumed ||
+          spend.requestId !== requestId ||
+          !spend.sessionExpiresAt ||
+          spend.sessionExpiresAt <= now ||
+          !same(spend.sidDigest, sidDigest)
+        ) {
+          return false;
+        }
+        let stored = await transaction.get<StoredCreateDiagnosticState>(
+          CREATE_DIAGNOSTIC_STORAGE_KEY,
+        );
+        if (stored && stored.expiresAt <= now) {
+          await transaction.delete(CREATE_DIAGNOSTIC_STORAGE_KEY);
+          stored = undefined;
+        }
+        if (
+          stored &&
+          (stored.correlationId !== requestId ||
+            !same(stored.sidDigest, sidDigest) ||
+            stored.cleared ||
+            sequence <= stored.sequence ||
+            phaseRank[stored.phase] > phaseRank[event.phase] ||
+            (phaseRank[stored.phase] === phaseRank[event.phase] &&
+              stored.phase !== event.phase))
+        ) {
+          return false;
+        }
+        const receiptExpiresAt = Math.min(
+          spend.sessionExpiresAt,
+          now + CREATE_DIAGNOSTIC_RETENTION_SECONDS,
+        );
+        await transaction.put(CREATE_DIAGNOSTIC_STORAGE_KEY, {
+          ...event,
+          sidDigest,
+          sequence,
+          cleared: false,
+          observedAt: now,
+          expiresAt: receiptExpiresAt,
+        } satisfies StoredCreateDiagnosticReceipt);
+        await transaction.setAlarm(receiptExpiresAt * 1_000);
+        return true;
+      },
+    );
+  }
+  async clearCreateDiagnostic(
+    sidDigest: string,
+    requestId: string,
+    sequence: number,
+    now: number,
+  ): Promise<boolean> {
+    if (
+      !/^[A-Za-z0-9_-]{43}$/.test(sidDigest) ||
+      !CHAT_REQUEST_ID_PATTERN.test(requestId) ||
+      !Number.isInteger(sequence) ||
+      sequence < 1 ||
+      sequence > 64 ||
+      !Number.isInteger(now) ||
+      now <= 0
+    ) return false;
+    const cleared = await this.ctx.storage.transaction(async (transaction) => {
+      const spend = await transaction.get<StoredSpendGrant>(
+        "spend-grant-current",
+      );
+      if (
+        !spend ||
+        !spend.consumed ||
+        spend.requestId !== requestId ||
+        !spend.sessionExpiresAt ||
+        spend.sessionExpiresAt <= now ||
+        !same(spend.sidDigest, sidDigest)
+      ) {
+        return false;
+      }
+      let stored = await transaction.get<StoredCreateDiagnosticState>(
+        CREATE_DIAGNOSTIC_STORAGE_KEY,
+      );
+      if (stored && stored.expiresAt <= now) {
+        await transaction.delete(CREATE_DIAGNOSTIC_STORAGE_KEY);
+        stored = undefined;
+      }
+      if (
+        stored &&
+        (stored.correlationId !== requestId ||
+          !same(stored.sidDigest, sidDigest) ||
+          stored.cleared ||
+          sequence <= stored.sequence)
+      ) {
+        return false;
+      }
+      const receiptExpiresAt = Math.min(
+        spend.sessionExpiresAt,
+        now + CREATE_DIAGNOSTIC_RETENTION_SECONDS,
+      );
+      await transaction.put(CREATE_DIAGNOSTIC_STORAGE_KEY, {
+        sidDigest,
+        correlationId: requestId,
+        sequence,
+        cleared: true,
+        observedAt: now,
+        expiresAt: receiptExpiresAt,
+      } satisfies StoredCreateDiagnosticTombstone);
+      await transaction.setAlarm(receiptExpiresAt * 1_000);
+      return true;
+    });
+    return cleared;
+  }
+  async readCreateDiagnostic(
+    sid: string,
+    requestId: string,
+    now: number,
+  ): Promise<CreateDiagnosticLookup> {
+    if (
+      !/^[A-Za-z0-9_-]{43}$/.test(sid) ||
+      !CHAT_REQUEST_ID_PATTERN.test(requestId) ||
+      !Number.isInteger(now) ||
+      now <= 0
+    ) return { kind: "denied" };
+    const sidDigest = await digest(sid);
+    return this.ctx.storage.transaction(async (transaction) => {
+      const spend = await transaction.get<StoredSpendGrant>(
+        "spend-grant-current",
+      );
+      let stored = await transaction.get<StoredCreateDiagnosticState>(
+        CREATE_DIAGNOSTIC_STORAGE_KEY,
+      );
+      if (stored && stored.expiresAt <= now) {
+        await transaction.delete(CREATE_DIAGNOSTIC_STORAGE_KEY);
+        await transaction.deleteAlarm();
+        stored = undefined;
+      }
+      if (
+        !spend ||
+        !spend.consumed ||
+        spend.requestId !== requestId ||
+        !spend.sessionExpiresAt ||
+        spend.sessionExpiresAt <= now ||
+        !same(spend.sidDigest, sidDigest)
+      ) {
+        return { kind: "denied" };
+      }
+      if (!stored) return { kind: "none" };
+      if (
+        stored.correlationId !== requestId ||
+        !same(stored.sidDigest, sidDigest)
+      ) {
+        return { kind: "denied" };
+      }
+      if (stored.cleared) return { kind: "none" };
+      const {
+        sidDigest: _sidDigest,
+        sequence: _sequence,
+        cleared: _cleared,
+        ...receipt
+      } = stored;
+      return { kind: "receipt", receipt };
+    });
+  }
+  async alarm(): Promise<void> {
+    const stored = await this.ctx.storage.get<StoredCreateDiagnosticState>(
+      CREATE_DIAGNOSTIC_STORAGE_KEY,
+    );
+    if (!stored) return;
+    const now = Math.floor(Date.now() / 1_000);
+    if (stored.expiresAt <= now) {
+      await this.ctx.storage.delete(CREATE_DIAGNOSTIC_STORAGE_KEY);
+      return;
+    }
+    await this.ctx.storage.setAlarm(stored.expiresAt * 1_000);
   }
   async consumeSpendGrantAndReserveDirectRun(
     epoch: string,
@@ -1153,6 +1413,52 @@ export async function authenticate(
     if (url.pathname.startsWith("/__auth/passkeys/add")) {
       return json({ error: "backup passkey enrollment is not available" }, 404);
     }
+    if (
+      url.pathname === CREATE_DIAGNOSTIC_READ_PATH &&
+      request.method === "POST"
+    ) {
+      if (!validCsrf()) return json({ error: "invalid csrf" }, 403);
+      if (
+        session.role !== "agent" ||
+        !env.AGENT_AUTH_KEY_ID ||
+        session.email !== `agent:${env.AGENT_AUTH_KEY_ID}`
+      ) {
+        return json({ error: "not found" }, 404);
+      }
+      const body = await readBoundedJson<{ requestId?: string }>(
+        request,
+        1_024,
+      );
+      if (
+        !body ||
+        !CHAT_REQUEST_ID_PATTERN.test(String(body.requestId || "")) ||
+        Object.keys(body).some((key) => key !== "requestId")
+      ) {
+        return json({ error: "invalid diagnostic request" }, 400);
+      }
+      const diagnostic = await state.readCreateDiagnostic(
+        session.sid,
+        body.requestId!,
+        now,
+      );
+      if (diagnostic.kind === "receipt") {
+        return json(
+          { diagnostic: diagnostic.receipt },
+          200,
+          { "cache-control": "private, no-store" },
+        );
+      }
+      return diagnostic.kind === "none"
+        ? new Response(null, {
+            status: 204,
+            headers: { "cache-control": "private, no-store" },
+          })
+        : json(
+            { error: "not found" },
+            404,
+            { "cache-control": "private, no-store" },
+          );
+    }
     if (url.pathname === "/__auth/spend/authorize" && request.method === "POST") {
       if (!validCsrf()) return json({ error: "invalid csrf" }, 403);
       if (
@@ -1264,6 +1570,9 @@ export async function authenticate(
   }
   const hasPasskey = await state.hasPasskey();
   if (url.pathname.startsWith("/__auth/passkeys/add")) return json({ error: "not authorized" }, 403);
+  if (url.pathname.startsWith(CREATE_DIAGNOSTIC_READ_PATH)) {
+    return json({ error: "not found" }, 404);
+  }
   if (url.pathname.startsWith("/__auth/spend/")) return json({ error: "not authorized" }, 403);
   if (adminOnly && (url.pathname.startsWith("/__auth/otp/") || url.pathname.startsWith("/__auth/magic"))) {
     return json({ error: "not found" }, 404);

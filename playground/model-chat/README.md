@@ -53,6 +53,25 @@ request reaches the container. A fresh caller UUID, new login, or concurrent
 POST cannot bypass it; replays return `409`, and an admitted request is never
 automatically retried after an ambiguous forward.
 
+The same transaction binds that UUID to a digest of the authenticated agent
+session. The create transport emits a signed, 30-second internal callback with
+only a fixed phase (`pre_network_rejection`, `outbound_post_attempt`,
+`provider_response`, or `transport_ambiguity`), two transport booleans, an
+optional numeric HTTP status or fixed local reason, and
+`retryCreateAutomatically: false`. It never copies prompts, tool inputs,
+schemas, result or provider prose, reasoning, error messages, stacks, headers,
+cookies, keys, or the raw session ID. The existing `AdminAuthState` stores at
+most the last durable receipt. Monotonic callback sequence numbers and an
+invisible success tombstone reject delayed or replayed phase updates. Both
+receipts and tombstones physically expire after ten minutes or at session
+expiry, whichever comes first. A CSRF-protected read returns a receipt only to
+the same registered agent session, and returns an empty `204` to that session
+when no receipt exists; every other principal or request ID receives `404`. The
+browser renders `receipt`, authenticated `none`, and `unread` as distinct
+states. If a callback itself fails, the UI can show only the last phase durably
+recorded before that failure, and warns against resubmission when no receipt can
+be established. Diagnostic recording does not add a create retry path.
+
 Configure one model provider (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, or
 `OPENROUTER_API_KEY`). The deployment-specific `AUTH_RP_ID`,
 `AGENT_AUTH_KEY_ID`, and `AGENT_AUTH_WORKSPACE_ID` bindings are required

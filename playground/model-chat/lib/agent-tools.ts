@@ -3,6 +3,13 @@ import {
   nimbleAgentRunStatus,
   nimbleAgentStartRun,
 } from '@nimble-way/ai-sdk';
+import {
+  createDiagnosticEvent,
+  sanitizedCreateDiagnosticError,
+  type CreateDiagnosticEvent,
+  type CreateDiagnosticLocalReason,
+  type CreateDiagnosticReporter,
+} from './create-diagnostics';
 
 export const POLL_INTERVAL_MS = 10_000;
 export const RESULT_TIMEOUT_MS = 300_000;
@@ -352,9 +359,117 @@ function validateModelOutputSchema(outputSchema: unknown): string | undefined {
  * agentId returned with the run. Create is pinned to low; the package itself
  * disables retries for the non-idempotent create request.
  */
-export function buildAgentTools(apiKey: string, factories: ToolFactories = defaultFactories) {
+export function buildAgentTools(
+  apiKey: string,
+  factories: ToolFactories = defaultFactories,
+  diagnostics?: CreateDiagnosticReporter,
+) {
+  let diagnosticEvent: CreateDiagnosticEvent | undefined;
+  let providerFetchInvoked = false;
+
+  const event = (
+    phase: CreateDiagnosticEvent['phase'],
+    fields: Partial<CreateDiagnosticEvent> = {},
+  ): CreateDiagnosticEvent => {
+    const correlationId = diagnostics?.correlationId ?? crypto.randomUUID();
+    if (phase === 'pre_network_rejection') {
+      return createDiagnosticEvent({
+        correlationId,
+        phase,
+        localReason:
+          (fields.localReason as CreateDiagnosticLocalReason | undefined) ??
+          'sdk_local_rejection',
+      });
+    }
+    if (phase === 'provider_response') {
+      return createDiagnosticEvent({
+        correlationId,
+        phase,
+        httpStatus: Number(fields.httpStatus),
+      });
+    }
+    return createDiagnosticEvent({ correlationId, phase });
+  };
+
+  const record = async (next: CreateDiagnosticEvent): Promise<boolean> => {
+    diagnosticEvent = next;
+    if (!diagnostics) return true;
+    try {
+      return await diagnostics.report(next);
+    } catch {
+      return false;
+    }
+  };
+
+  const preNetwork = (
+    localReason: CreateDiagnosticLocalReason,
+  ): CreateDiagnosticEvent =>
+    event('pre_network_rejection', { localReason });
+
+  const diagnosticFetch: typeof fetch = async (input, init) => {
+    if (!diagnostics) return globalThis.fetch(input, init);
+    if (providerFetchInvoked) {
+      throw sanitizedCreateDiagnosticError(
+        diagnosticEvent ?? event('transport_ambiguity'),
+      );
+    }
+    let request: Request;
+    try {
+      request = new Request(input, init);
+      const url = new URL(request.url);
+      if (
+        request.method !== 'POST' ||
+        url.origin !== 'https://sdk.nimbleway.com' ||
+        url.pathname !== '/v2/agents/runs' ||
+        url.search !== '' ||
+        url.hash !== ''
+      ) {
+        throw new Error('Unexpected create transport request.');
+      }
+    } catch {
+      const rejected = preNetwork('sdk_local_rejection');
+      await record(rejected);
+      throw sanitizedCreateDiagnosticError(rejected);
+    }
+
+    providerFetchInvoked = true;
+    let providerOutcome: Promise<
+      { ok: true; response: Response } | { ok: false }
+    >;
+    try {
+      providerOutcome = diagnostics.baseFetch(request).then(
+        (response) => ({ ok: true as const, response }),
+        () => ({ ok: false as const }),
+      );
+    } catch {
+      const ambiguous = event('transport_ambiguity');
+      await record(ambiguous);
+      throw sanitizedCreateDiagnosticError(ambiguous);
+    }
+
+    const attempted = event('outbound_post_attempt');
+    await record(attempted);
+    const outcome = await providerOutcome;
+    if (outcome.ok) {
+      const responseEvent = event('provider_response', {
+        httpStatus: outcome.response.status,
+      });
+      await record(responseEvent);
+      return outcome.response;
+    }
+    const ambiguous = event('transport_ambiguity');
+    await record(ambiguous);
+    throw sanitizedCreateDiagnosticError(ambiguous);
+  };
+
   const tools = {
-    startResearch: factories.start({ apiKey, effort: 'low' }),
+    startResearch: factories.start({
+      apiKey,
+      effort: 'low',
+      ...(diagnostics
+        ? { clientOptions: { fetch: diagnosticFetch } }
+        : {}),
+    }),
     checkResearch: factories.status({ apiKey }),
     getResearchResult: factories.result({
       apiKey,
@@ -383,28 +498,59 @@ export function buildAgentTools(apiKey: string, factories: ToolFactories = defau
       if (createPromise) return createPromise;
       const validationError = validateModelOutputSchema(input.outputSchema);
       if (validationError) {
-        return Promise.reject(
-          new Error(
-            `outputSchema was rejected before any Agent API request: ${validationError}. ` +
-              'Use this playground subset (type, properties/items, required, ' +
-              'additionalProperties, scalar enum/const, descriptions, formats, and ' +
-              'basic bounds), or omit outputSchema.',
-          ),
-        );
+        if (!diagnostics) {
+          return Promise.reject(
+            new Error(
+              `outputSchema was rejected before any Agent API request: ${validationError}. ` +
+                'Use this playground subset (type, properties/items, required, ' +
+                'additionalProperties, scalar enum/const, descriptions, formats, and ' +
+                'basic bounds), or omit outputSchema.',
+            ),
+          );
+        }
+        const rejected = preNetwork('schema_validation');
+        return record(rejected).then(() => {
+          throw sanitizedCreateDiagnosticError(rejected);
+        });
       }
       if (input.inputData !== undefined && input.outputSchema === undefined) {
-        return Promise.reject(
-          new Error(
-            'inputData was rejected before any Agent API request: provide a matching ' +
-              'typed outputSchema, or omit inputData.',
-          ),
-        );
+        if (!diagnostics) {
+          return Promise.reject(
+            new Error(
+              'inputData was rejected before any Agent API request: provide a matching ' +
+                'typed outputSchema, or omit inputData.',
+            ),
+          );
+        }
+        const rejected = preNetwork('input_data_without_schema');
+        return record(rejected).then(() => {
+          throw sanitizedCreateDiagnosticError(rejected);
+        });
       }
-      try {
-        createPromise = Promise.resolve(executeStart(input, options));
-      } catch (error) {
-        createPromise = Promise.reject(error);
+      if (!diagnostics) {
+        try {
+          createPromise = Promise.resolve(executeStart(input, options));
+        } catch (error) {
+          createPromise = Promise.reject(error);
+        }
+        return createPromise;
       }
+      createPromise = Promise.resolve()
+        .then(() => executeStart(input, options))
+        .then(async (created) => {
+          try {
+            await diagnostics.clear();
+          } catch {
+            // A failed diagnostic clear must not turn a successful create into
+            // a retryable-looking tool failure.
+          }
+          return created;
+        })
+        .catch(async () => {
+          const current = diagnosticEvent ?? preNetwork('sdk_local_rejection');
+          if (!diagnosticEvent) await record(current);
+          throw sanitizedCreateDiagnosticError(current);
+        });
       return createPromise;
     },
   };
