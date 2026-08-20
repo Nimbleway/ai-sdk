@@ -18,6 +18,8 @@ const MAX_OUTPUT_SCHEMA_BYTES = 16 * 1_024;
 const MAX_OUTPUT_SCHEMA_DEPTH = 8;
 const MAX_OUTPUT_SCHEMA_NODES = 256;
 const MAX_OUTPUT_SCHEMA_PROPERTIES = 128;
+const CONFIGURED_AGENT_CREATE_PATH =
+  /^\/v2\/agents\/[A-Za-z0-9._~-]+\/runs$/;
 
 const JSON_SCHEMA_TYPES = new Set([
   'array',
@@ -354,10 +356,11 @@ function validateModelOutputSchema(outputSchema: unknown): string | undefined {
 }
 
 /**
- * Request-scoped tools for the model-driven demo. No agentId is configured,
- * so startResearch uses POST /v2/agents/runs and preserves the generated
- * agentId returned with the run. Create is pinned to low; the package itself
- * disables retries for the non-idempotent create request.
+ * Request-scoped tools for the model-driven demo. startResearch uses the
+ * configured-agent route when NIMBLE_AGENT_ID is present; otherwise it uses
+ * POST /v2/agents/runs and preserves the generated agentId returned with the
+ * run. Create is pinned to low; the package itself disables retries for the
+ * non-idempotent create request.
  */
 export function buildAgentTools(
   apiKey: string,
@@ -417,10 +420,13 @@ export function buildAgentTools(
     try {
       request = new Request(input, init);
       const url = new URL(request.url);
+      const isAgentCreatePath =
+        url.pathname === '/v2/agents/runs' ||
+        CONFIGURED_AGENT_CREATE_PATH.test(url.pathname);
       if (
         request.method !== 'POST' ||
         url.origin !== 'https://sdk.nimbleway.com' ||
-        url.pathname !== '/v2/agents/runs' ||
+        !isAgentCreatePath ||
         url.search !== '' ||
         url.hash !== ''
       ) {

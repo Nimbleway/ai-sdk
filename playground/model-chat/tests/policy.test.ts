@@ -23,6 +23,10 @@ import { newChatRequestId } from '../lib/request-id';
 
 const GENERATED_AGENT_CREATE_URL =
   'https://sdk.nimbleway.com/v2/agents/runs';
+const CONFIGURED_AGENT_ID =
+  'wsa_22222222-2222-4222-8222-222222222222';
+const CONFIGURED_AGENT_CREATE_URL =
+  `https://sdk.nimbleway.com/v2/agents/${CONFIGURED_AGENT_ID}/runs`;
 
 describe('model chat Agent V2 policy', () => {
   it('exposes exactly the start/status/result lifecycle', () => {
@@ -256,7 +260,50 @@ describe('model chat Agent V2 policy', () => {
       ]);
     });
 
-    it('rejects an unexpected intercepted request before invoking the provider transport', async () => {
+    it.each([
+      {
+        boundary: 'empty agent id',
+        url: 'https://sdk.nimbleway.com/v2/agents//runs',
+        init: { method: 'POST' },
+      },
+      {
+        boundary: 'extra path segment',
+        url: `https://sdk.nimbleway.com/v2/agents/${CONFIGURED_AGENT_ID}/runs/unexpected`,
+        init: { method: 'POST' },
+      },
+      {
+        boundary: 'encoded separator in agent id',
+        url: 'https://sdk.nimbleway.com/v2/agents/wsa_bad%2Fsegment/runs',
+        init: { method: 'POST' },
+      },
+      {
+        boundary: 'invalid agent-id character',
+        url: 'https://sdk.nimbleway.com/v2/agents/wsa_bad:segment/runs',
+        init: { method: 'POST' },
+      },
+      {
+        boundary: 'unexpected origin',
+        url: 'https://example.invalid/v2/agents/runs',
+        init: { method: 'POST' },
+      },
+      {
+        boundary: 'non-POST method',
+        url: 'https://sdk.nimbleway.com/v2/agents/runs',
+        init: { method: 'GET' },
+      },
+      {
+        boundary: 'query string',
+        url: `${CONFIGURED_AGENT_CREATE_URL}?trace=1`,
+        init: { method: 'POST' },
+      },
+      {
+        boundary: 'URL fragment',
+        url: `${CONFIGURED_AGENT_CREATE_URL}#trace`,
+        init: { method: 'POST' },
+      },
+    ])(
+      'rejects $boundary before invoking the provider transport',
+      async ({ url, init }) => {
       const baseFetch = vi.fn(async () => new Response(null, { status: 202 }));
       const events: CreateDiagnosticEvent[] = [];
       const diagnostics: CreateDiagnosticReporter = {
@@ -269,9 +316,7 @@ describe('model chat Agent V2 policy', () => {
         clear: vi.fn(async () => true),
       };
       const underlyingCreate = vi.fn(async (providerFetch: typeof fetch) => {
-        await providerFetch('https://sdk.nimbleway.com/v2/agents/runs/unexpected', {
-          method: 'POST',
-        });
+        await providerFetch(url, init);
         return { runId: 'task_run_one', agentId: 'wsa_one' };
       });
       const tools = buildAgentTools(
@@ -307,7 +352,8 @@ describe('model chat Agent V2 policy', () => {
         providerPostAttempted: false,
         providerResponseReceived: false,
       });
-    });
+      },
+    );
 
     it('records outbound and 202 response, then clears once after one successful create', async () => {
       const operations: string[] = [];
@@ -447,6 +493,83 @@ describe('model chat Agent V2 policy', () => {
       expect(captured).toBeDefined();
       expect(captured!.method).toBe('POST');
       expect(captured!.url).toBe(GENERATED_AGENT_CREATE_URL);
+      expect(events.map((event) => event.phase)).toEqual([
+        'outbound_post_attempt',
+        'provider_response',
+      ]);
+      expect(diagnostics.clear).toHaveBeenCalledOnce();
+    });
+
+    it('observes the released SDK configured-agent POST exactly once', async () => {
+      const previousAgentId = process.env.NIMBLE_AGENT_ID;
+      process.env.NIMBLE_AGENT_ID = CONFIGURED_AGENT_ID;
+      let captured: Request | undefined;
+      const baseFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        captured = new Request(input, init);
+        return new Response(
+          JSON.stringify({
+            id: 'task_run_22222222-2222-4222-8222-222222222222',
+            interaction_id: 'interaction_22222222-2222-4222-8222-222222222222',
+            status: 'queued',
+            is_active: true,
+            effort: 'low',
+            created_at: '2026-07-22T10:00:00Z',
+            web_search_agent_id: CONFIGURED_AGENT_ID,
+          }),
+          {
+            status: 202,
+            headers: { 'content-type': 'application/json' },
+          },
+        );
+      });
+      const events: CreateDiagnosticEvent[] = [];
+      const diagnostics: CreateDiagnosticReporter = {
+        correlationId,
+        baseFetch: baseFetch as unknown as typeof fetch,
+        report: vi.fn(async (event) => {
+          events.push(event);
+          return true;
+        }),
+        clear: vi.fn(async () => true),
+      };
+
+      try {
+        const tools = buildAgentTools(
+          'nimble_request_key',
+          undefined,
+          diagnostics,
+        ) as unknown as Record<string, Executable>;
+
+        const first = tools.startResearch.execute(
+          { task: 'one bounded research task' },
+          {},
+        );
+        const repeated = tools.startResearch.execute(
+          { task: 'duplicate bounded research task' },
+          {},
+        );
+        expect(repeated).toBe(first);
+        await expect(first).resolves.toMatchObject({
+          runId: 'task_run_22222222-2222-4222-8222-222222222222',
+          agentId: CONFIGURED_AGENT_ID,
+          status: 'queued',
+          effort: 'low',
+        });
+        await expect(repeated).resolves.toMatchObject({
+          agentId: CONFIGURED_AGENT_ID,
+        });
+      } finally {
+        if (previousAgentId === undefined) {
+          delete process.env.NIMBLE_AGENT_ID;
+        } else {
+          process.env.NIMBLE_AGENT_ID = previousAgentId;
+        }
+      }
+
+      expect(baseFetch).toHaveBeenCalledOnce();
+      expect(captured).toBeDefined();
+      expect(captured!.method).toBe('POST');
+      expect(captured!.url).toBe(CONFIGURED_AGENT_CREATE_URL);
       expect(events.map((event) => event.phase)).toEqual([
         'outbound_post_attempt',
         'provider_response',
