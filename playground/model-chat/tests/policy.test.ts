@@ -80,6 +80,48 @@ describe('model chat Agent V2 policy', () => {
     });
   });
 
+  it.each([
+    { value: 'wsa_bad:segment', withDiagnostics: false },
+    { value: 'wsa_other', withDiagnostics: false },
+    { value: 'wsa_bad:segment', withDiagnostics: true },
+    { value: 'wsa_other', withDiagnostics: true },
+  ])(
+    'rejects noncanonical configured ID $value before tool construction (diagnostics=$withDiagnostics)',
+    ({ value, withDiagnostics }) => {
+      const previousAgentId = process.env.NIMBLE_AGENT_ID;
+      process.env.NIMBLE_AGENT_ID = value;
+      const start = vi.fn(() => ({ execute: vi.fn() }));
+      const status = vi.fn(() => ({ execute: vi.fn() }));
+      const result = vi.fn(() => ({ execute: vi.fn() }));
+      const diagnostics: CreateDiagnosticReporter | undefined = withDiagnostics
+        ? {
+            correlationId: newChatRequestId(),
+            baseFetch: vi.fn() as unknown as typeof fetch,
+            report: vi.fn(async () => true),
+            clear: vi.fn(async () => true),
+          }
+        : undefined;
+
+      try {
+        expect(() =>
+          buildAgentTools(
+            'nimble_request_key',
+            { start, status, result } as never,
+            diagnostics,
+          ),
+        ).toThrow('canonical Web Search Agent ID');
+      } finally {
+        if (previousAgentId === undefined) delete process.env.NIMBLE_AGENT_ID;
+        else process.env.NIMBLE_AGENT_ID = previousAgentId;
+      }
+
+      expect(start).not.toHaveBeenCalled();
+      expect(status).not.toHaveBeenCalled();
+      expect(result).not.toHaveBeenCalled();
+      if (diagnostics) expect(diagnostics.baseFetch).not.toHaveBeenCalled();
+    },
+  );
+
   it('atomically deduplicates parallel starts and binds lifecycle IDs', async () => {
     let release!: (value: Record<string, unknown>) => void;
     const pending = new Promise<Record<string, unknown>>((resolve) => {
@@ -279,6 +321,11 @@ describe('model chat Agent V2 policy', () => {
       {
         boundary: 'invalid agent-id character',
         url: 'https://sdk.nimbleway.com/v2/agents/wsa_bad:segment/runs',
+        init: { method: 'POST' },
+      },
+      {
+        boundary: 'configured-agent route when no agent is configured',
+        url: CONFIGURED_AGENT_CREATE_URL,
         init: { method: 'POST' },
       },
       {
@@ -575,6 +622,58 @@ describe('model chat Agent V2 policy', () => {
         'provider_response',
       ]);
       expect(diagnostics.clear).toHaveBeenCalledOnce();
+    });
+
+    it.each([
+      {
+        boundary: 'generated route while an agent is configured',
+        url: GENERATED_AGENT_CREATE_URL,
+      },
+      {
+        boundary: 'another agent route while an agent is configured',
+        url: 'https://sdk.nimbleway.com/v2/agents/wsa_other/runs',
+      },
+    ])('rejects $boundary before provider transport', async ({ url }) => {
+      const previousAgentId = process.env.NIMBLE_AGENT_ID;
+      process.env.NIMBLE_AGENT_ID = CONFIGURED_AGENT_ID;
+      const baseFetch = vi.fn(async () => new Response(null, { status: 202 }));
+      const diagnostics: CreateDiagnosticReporter = {
+        correlationId,
+        baseFetch: baseFetch as unknown as typeof fetch,
+        report: vi.fn(async () => true),
+        clear: vi.fn(async () => true),
+      };
+      const underlyingCreate = vi.fn(async (providerFetch: typeof fetch) => {
+        await providerFetch(url, { method: 'POST' });
+        return { runId: 'task_run_one', agentId: CONFIGURED_AGENT_ID };
+      });
+
+      try {
+        const tools = buildAgentTools(
+          'nimble_request_key',
+          {
+            start: vi.fn(
+              (config: { clientOptions?: { fetch?: typeof fetch } }) => ({
+                execute: () => underlyingCreate(config.clientOptions!.fetch!),
+              }),
+            ),
+            status: vi.fn(() => ({ execute: vi.fn() })),
+            result: vi.fn(() => ({ execute: vi.fn() })),
+          } as never,
+          diagnostics,
+        ) as unknown as Record<string, Executable>;
+
+        await expect(
+          tools.startResearch.execute({ task: 'one bounded task' }, {}),
+        ).rejects.toThrow('pre_network_rejection');
+      } finally {
+        if (previousAgentId === undefined) delete process.env.NIMBLE_AGENT_ID;
+        else process.env.NIMBLE_AGENT_ID = previousAgentId;
+      }
+
+      expect(underlyingCreate).toHaveBeenCalledOnce();
+      expect(baseFetch).not.toHaveBeenCalled();
+      expect(diagnostics.clear).not.toHaveBeenCalled();
     });
 
     it('keeps the last durable phase candid when terminal reporting and clear fail', async () => {

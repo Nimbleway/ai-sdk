@@ -18,8 +18,8 @@ const MAX_OUTPUT_SCHEMA_BYTES = 16 * 1_024;
 const MAX_OUTPUT_SCHEMA_DEPTH = 8;
 const MAX_OUTPUT_SCHEMA_NODES = 256;
 const MAX_OUTPUT_SCHEMA_PROPERTIES = 128;
-const CONFIGURED_AGENT_CREATE_PATH =
-  /^\/v2\/agents\/[A-Za-z0-9._~-]+\/runs$/;
+const CONFIGURED_AGENT_ID =
+  /^wsa_(?:[0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i;
 
 const JSON_SCHEMA_TYPES = new Set([
   'array',
@@ -367,6 +367,13 @@ export function buildAgentTools(
   factories: ToolFactories = defaultFactories,
   diagnostics?: CreateDiagnosticReporter,
 ) {
+  const configuredAgentId = process.env.NIMBLE_AGENT_ID || undefined;
+  if (configuredAgentId && !CONFIGURED_AGENT_ID.test(configuredAgentId)) {
+    throw new Error('NIMBLE_AGENT_ID must be a canonical Web Search Agent ID.');
+  }
+  const expectedCreatePath = configuredAgentId
+    ? `/v2/agents/${configuredAgentId}/runs`
+    : '/v2/agents/runs';
   let diagnosticEvent: CreateDiagnosticEvent | undefined;
   let providerFetchInvoked = false;
 
@@ -420,13 +427,10 @@ export function buildAgentTools(
     try {
       request = new Request(input, init);
       const url = new URL(request.url);
-      const isAgentCreatePath =
-        url.pathname === '/v2/agents/runs' ||
-        CONFIGURED_AGENT_CREATE_PATH.test(url.pathname);
       if (
         request.method !== 'POST' ||
         url.origin !== 'https://sdk.nimbleway.com' ||
-        !isAgentCreatePath ||
+        url.pathname !== expectedCreatePath ||
         url.search !== '' ||
         url.hash !== ''
       ) {
@@ -472,6 +476,7 @@ export function buildAgentTools(
     startResearch: factories.start({
       apiKey,
       effort: 'low',
+      ...(configuredAgentId ? { agentId: configuredAgentId } : {}),
       ...(diagnostics
         ? { clientOptions: { fetch: diagnosticFetch } }
         : {}),
