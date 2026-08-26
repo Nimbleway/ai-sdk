@@ -51,13 +51,14 @@
     "prepublishOnly": "pnpm run build"
   },
   "dependencies": {
-    "@nimble-way/nimble-js": "^1.1.0"
+    "@nimble-way/nimble-js": "^1.2.0"
   },
   "peerDependencies": {
     "ai": "^6",
     "zod": "^3.25.76 || ^4.1.8"
   },
   "devDependencies": {
+    "@simplewebauthn/server": "^13.3.2",
     "@types/node": "^22.0.0",
     "ai": "^6.0.0",
     "tsup": "^8.3.0",
@@ -72,5 +73,6 @@
   "publishConfig": {
     "access": "public",
     "provenance": true
-  }
+  },
+  "packageManager": "pnpm@10.34.5"
 }

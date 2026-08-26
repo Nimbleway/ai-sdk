@@ -123,11 +123,64 @@ describe('X-Client-Source attribution (real client, stubbed network)', () => {
       agentId: AGENT_ID,
       clientOptions: { fetch, maxRetries: 0 },
     });
-    const out = (await t.execute!({ runId: RUN_ID }, execOpts)) as { ready: boolean };
+    const out = (await t.execute!({ runId: RUN_ID, agentId: AGENT_ID }, execOpts)) as { ready: boolean };
 
     expect(out.ready).toBe(true);
     expect(seen).toHaveLength(2); // status get + result get
     for (const req of seen) expectAttribution(req);
+  });
+
+  // C01: no configured agent → the generic generated-agent route on the wire.
+  it('nimbleAgentStartRun uses POST /v2/agents/runs when no agent is configured', async () => {
+    const { seen, fetch } = captureFetch([{ status: 202, json: rawRun() }]);
+    const t = nimbleAgentStartRun({ apiKey: KEY, clientOptions: { fetch, maxRetries: 0 } });
+    const out = (await t.execute!({ task: 'research' }, execOpts)) as {
+      runId: string;
+      agentId: string;
+    };
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0]!.method).toBe('POST');
+    expect(new URL(seen[0]!.url).pathname).toBe('/v2/agents/runs');
+    expect(out.runId).toBe(RUN_ID);
+    expect(out.agentId).toBe(AGENT_ID); // the id the server returned
+    expectAttribution(seen[0]!);
+  });
+
+  /**
+   * C03 on the real transport. These deliberately do NOT set
+   * `clientOptions.maxRetries`, so the SDK's own default (2 retries) is live —
+   * only the package's per-request `maxRetries: 0` keeps create single-shot.
+   * The read-path case is the control: it proves this fetch stub really is
+   * retryable, so "1 attempt" on create is a property of our code, not of the
+   * fixture.
+   */
+  describe('run creation is single-shot against the real client', () => {
+    const retryable = [408, 409, 429, 500, 503];
+
+    it.each(retryable)('persistent-agent create makes ONE POST on %i', async (status) => {
+      const { seen, fetch } = captureFetch([{ status, json: { message: 'nope' } }]);
+      const t = nimbleAgentStartRun({ apiKey: KEY, agentId: AGENT_ID, clientOptions: { fetch } });
+      await Promise.resolve(t.execute!({ task: 'x' }, execOpts)).catch(() => undefined);
+      expect(seen).toHaveLength(1);
+    });
+
+    it.each(retryable)('generated-agent create makes ONE POST on %i', async (status) => {
+      const { seen, fetch } = captureFetch([{ status, json: { message: 'nope' } }]);
+      const t = nimbleAgentStartRun({ apiKey: KEY, clientOptions: { fetch } });
+      await Promise.resolve(t.execute!({ task: 'x' }, execOpts)).catch(() => undefined);
+      expect(seen).toHaveLength(1);
+      expect(new URL(seen[0]!.url).pathname).toBe('/v2/agents/runs');
+    });
+
+    it('control: the read path DOES retry with the same stub (so 1 POST is ours)', async () => {
+      const { seen, fetch } = captureFetch([{ status: 500, json: { message: 'nope' } }]);
+      const t = nimbleAgentRunStatus({ apiKey: KEY, agentId: AGENT_ID, clientOptions: { fetch } });
+      await Promise.resolve(
+        t.execute!({ runId: RUN_ID, agentId: AGENT_ID }, execOpts),
+      ).catch(() => undefined);
+      expect(seen.length).toBeGreaterThan(1);
+    });
   });
 
   it('real-client errors never leak the API key', async () => {
@@ -156,7 +209,11 @@ describe('X-Client-Source attribution (real client, stubbed network)', () => {
       agentId: AGENT_ID,
       clientOptions: { fetch, maxRetries: 0 },
     });
-    await t.execute!({ runId: 'x/../../v2/agents/OTHER/runs/y' }, execOpts);
+    // The response is for a different run, so the identity guard rejects it —
+    // irrelevant here: what is under test is the URL that went out.
+    await Promise.resolve(
+      t.execute!({ runId: 'x/../../v2/agents/OTHER/runs/y', agentId: AGENT_ID }, execOpts),
+    ).catch(() => undefined);
 
     const pathname = new URL(seen[0]!.url).pathname;
     expect(pathname).toContain(`/v2/agents/${AGENT_ID}/runs/`);

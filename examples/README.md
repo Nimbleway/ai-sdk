@@ -43,6 +43,8 @@ pnpm agent    "How is the EU AI Act enforcement timeline changing?"      # deep 
 - [`agent-research.ts`](agent-research.ts) — the async deep-research flow: request 1 starts an
   agent run and returns in milliseconds; request 2 (even a separate process — try
   `pnpm agent --start-only "…"` then `pnpm agent --resume task_run_…`) fetches the cited
-  result. Needs `NIMBLE_AGENT_ID` (a research agent takes minutes at `medium` effort).
+  result. `NIMBLE_AGENT_ID` is optional — without it Nimble generates an agent
+  per run and returns its id. This example explicitly uses `low` effort as a
+  local demo cost policy; the reusable tool omits effort when unspecified.
 
 All use OpenAI `gpt-4o-mini` by default (override with `OPENAI_MODEL`); any AI SDK model works.

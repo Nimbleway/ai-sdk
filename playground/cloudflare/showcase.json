@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "integration_slug": "vercel-ai-sdk-nimble-v2",
+  "framework": "vercel-ai-sdk",
+  "runtime_command": ["npx", "wrangler", "dev"],
+  "_implementation_status": "Administrator WebAuthn, exact-domain employee OTP/magic-link, and signed local-agent access are implemented behind an explicit three-lane protected configuration. Hosted ceremony and lifecycle evidence are tracked separately from this manifest.",
+  "agent_api_v2": {
+    "enabled": true,
+    "identity_modes": ["auto", "agent_id"],
+    "product_modes": ["research", "enrichment", "dataset_building"],
+    "run_controls": [
+      "input",
+      "agent_name",
+      "effort",
+      "input_data",
+      "output_schema",
+      "sources",
+      "skill",
+      "use_case"
+    ],
+    "_effort_note": "The reusable adapter preserves the full API effort contract. The protected live UI and action boundary are separately fixed to low.",
+    "allowed_efforts": ["low"],
+    "create_retries": 0,
+    "client_source": "vercel-ai-sdk"
+  },
+  "authentication": {
+    "employee_email_domain": "nimbleway.com",
+    "employee_methods": ["otp", "magic_link"],
+    "admin_method": "webauthn",
+    "agent_method": "signed_single_use_activation",
+    "live_spend_authorizer": "registered_agent_only",
+    "live_spend_grant": "signed_epoch_bound_single_create",
+    "backend_default_deny": true,
+    "deployment_access": "three_lane_protected"
+  },
+  "evidence": {
+    "raw_directory": "evidence/raw",
+    "shareable_directory": "evidence/shareable",
+    "requires_live_video": true,
+    "requires_final_output_visible": true
+  }
+}

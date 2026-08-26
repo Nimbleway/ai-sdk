@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "integration_slug": "vercel-ai-sdk-nimble-web-search",
+  "framework": "Vercel AI SDK 6",
+  "runtime_command": ["pnpm", "start"],
+  "agent_api_v2": {
+    "enabled": true,
+    "identity_modes": ["auto"],
+    "product_modes": ["research", "enrichment", "dataset_building"],
+    "run_controls": [
+      "input",
+      "agent_name",
+      "effort",
+      "input_data",
+      "output_schema",
+      "sources",
+      "skill",
+      "use_case"
+    ],
+    "allowed_efforts": ["low"],
+    "create_retries": 0,
+    "client_source": "vercel-ai-sdk"
+  },
+  "authentication": {
+    "employee_email_domain": "nimbleway.com",
+    "employee_methods": ["otp", "magic_link"],
+    "admin_method": "webauthn",
+    "agent_method": "signed_single_use_activation",
+    "live_spend_authorizer": "registered_agent_only",
+    "live_spend_grant": "signed_epoch_bound_single_create",
+    "container_origin_auth": "signed_30_second_assertion",
+    "backend_default_deny": true,
+    "deployment_access": "three_lane_protected"
+  },
+  "evidence": {
+    "raw_directory": "evidence/raw",
+    "shareable_directory": "evidence/shareable",
+    "requires_live_video": true,
+    "requires_final_output_visible": true
+  }
+}

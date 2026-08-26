@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title>Nimble Agent V2 × Vercel AI SDK</title>
+  <style>
+    body{font:15px system-ui;max-width:900px;margin:2rem auto;padding:0 1rem;color:#15231d}
+    .grid{display:grid;grid-template-columns:1fr 1fr;gap:1rem} label{display:block;margin:.8rem 0 .25rem}
+    input,textarea,select,button{width:100%;box-sizing:border-box;padding:.65rem} textarea{min-height:90px}
+    button{margin-top:1rem;background:#0b6b43;color:white;border:0;border-radius:6px}
+    pre{background:#101a16;color:#bfffdc;padding:1rem;min-height:80px;white-space:pre-wrap;overflow:auto}
+    @media(max-width:700px){.grid{grid-template-columns:1fr}}
+  </style>
+</head>
+<body>
+  <h1>Nimble Agent API V2 × Vercel AI SDK</h1>
+  <p>Runs the real <code>@nimble-way/ai-sdk</code> start, status, and result tools.</p>
+  <div class="grid"><section>
+    <label>Agent ID (optional)</label><input id="agentId" placeholder="blank = server-provisioned WSA">
+    <label>Task</label><textarea id="task">Using only official Nimble documentation, identify the supported Agent API V2 run lifecycle and the per-run controls available when agent_id is omitted. Return a concise implementation checklist with source URLs.</textarea>
+    <label>Effort</label><input value="low" readonly aria-readonly="true">
+    <label>Use case (optional)</label><select id="useCase"><option value="">Unspecified</option><option selected value="research">Research</option><option value="enrichment">Enrichment</option><option value="dataset_building">Dataset building</option></select>
+    <label>Skill override (optional)</label><textarea id="skill">Use primary product documentation and preserve source URLs.</textarea>
+    <label>Input data JSON</label><textarea id="inputData"></textarea>
+    <label>Output schema JSON</label><textarea id="outputSchema"></textarea>
+    <label>Sources JSON</label><textarea id="sources">{"allow":[{"title":"Official Nimble documentation","domains":["docs.nimbleway.com"]}]}</textarea>
+    <button id="run">Authorize one low-effort run</button>
+  </section><section>
+    <h2>Live lifecycle</h2><pre id="logs">idle</pre>
+    <h2>Final output + trust</h2><pre id="result"></pre>
+  </section></div>
+<script>
+const $=id=>document.getElementById(id), log=s=>{$("logs").textContent+=`\n[${new Date().toISOString()}] ${s}`};
+const parse=id=>{const value=$(id).value.trim();return value?JSON.parse(value):undefined};
+const call=async(path,input)=>{const csrf=document.cookie.match(/(?:^|; )nimble_playground_csrf=([^;]+)/)?.[1]||"";const headers={"content-type":"application/json","x-csrf-token":csrf};const r=await fetch(path,{method:"POST",headers,body:JSON.stringify(input)});const b=await r.json();if(!r.ok){const e=Error(b.error||`HTTP ${r.status}`);e.details={httpStatus:r.status,...b};throw e}return b};
+$("run").onclick=async()=>{ $("logs").textContent="";$("result").textContent="";try{
+ const input={task:$("task").value.trim(),effort:"low",...($("useCase").value?{useCase:$("useCase").value}:{}),...($("skill").value.trim()?{skill:$("skill").value.trim()}:{}),...(parse("inputData")!==undefined?{inputData:parse("inputData")}:{}),...(parse("outputSchema")!==undefined?{outputSchema:parse("outputSchema")}:{}),...(parse("sources")!==undefined?{sources:parse("sources")}:{})};
+ log("Requesting the explicit 5-minute, exactly-one-create authorization");await call("/__auth/spend/authorize",{integration:"vercel-ai-sdk-agent-v2",effortCeiling:"low",createLimit:1});
+ log("Calling nimbleAgentStartRun tool (create is never auto-retried)");const start=await call("/api/start",{agentId:$("agentId").value.trim(),input});log(`created run ${start.runId} under ${start.agentId}; status=${start.status}`);
+ const ids={runId:start.runId,agentId:start.agentId};while(true){await new Promise(r=>setTimeout(r,10000));const status=await call("/api/status",{input:ids});log(`status=${status.status}`);if(["completed","failed","cancelled"].includes(status.status)){if(status.status==="completed"){$("result").textContent=JSON.stringify(await call("/api/result",{input:ids}),null,2)}break}}
+}catch(e){log(`error: ${e.message}`);if(e.details)$("result").textContent=JSON.stringify(e.details,null,2)}};
+</script>
+</body></html>

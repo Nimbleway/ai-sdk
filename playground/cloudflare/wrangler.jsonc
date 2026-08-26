@@ -1,0 +1,62 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "vercel-ai-sdk-nimble-v2-playground",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-28",
+  "compatibility_flags": ["nodejs_compat"],
+  "vars": {
+    "AUTH_EMPLOYEE_ENABLED": "true",
+    "SPEND_GRANT_EPOCH": "pr11-native-v2-review:1"
+  },
+  "send_email": [
+    {
+      "name": "AUTH_EMAIL",
+      "allowed_sender_addresses": ["login@auth.kadosh.dev"]
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      { "name": "ADMIN_AUTH", "class_name": "AdminAuthState" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["AdminAuthState"] }
+  ],
+  "assets": {
+    "directory": "public",
+    "binding": "ASSETS",
+    "not_found_handling": "none",
+    "run_worker_first": true
+  },
+  "observability": { "enabled": true }
+  ,
+  "env": {
+    "test": {
+      "durable_objects": {
+        "bindings": [
+          { "name": "ADMIN_AUTH", "class_name": "AdminAuthState" }
+        ]
+      },
+      "migrations": [
+        { "tag": "v1", "new_sqlite_classes": ["AdminAuthState"] }
+      ],
+      "vars": {
+        "AUTH_EMPLOYEE_ENABLED": "true",
+        "SPEND_GRANT_EPOCH": "pr11-native-v2-review:1",
+        "AUTH_RP_ID": "example.test",
+        "AGENT_AUTH_KEY_ID": "test-agent-key-id",
+        "AGENT_AUTH_PUBLIC_KEY": "test-agent-public-key-not-real",
+        "AGENT_AUTH_WORKSPACE_ID": "test-workspace",
+        "ADMIN_EMAIL": "admin@example.test",
+        "ADMIN_PASSKEY": "test-bootstrap-not-a-real-secret",
+        "ADMIN_SESSION_SECRET": "test-session-secret-not-real"
+      },
+      "send_email": [
+        {
+          "name": "AUTH_EMAIL",
+          "allowed_sender_addresses": ["login@auth.kadosh.dev"]
+        }
+      ]
+    }
+  }
+}

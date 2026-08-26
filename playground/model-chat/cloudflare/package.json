@@ -1,0 +1,20 @@
+{
+  "name": "nimble-agent-v2-model-chat-cloudflare",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "deploy:dry": "wrangler deploy --dry-run"
+  },
+  "dependencies": {
+    "@cloudflare/containers": "^0.0.24",
+    "@simplewebauthn/server": "^13.3.2"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260722.1",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0",
+    "wrangler": "4.114.0"
+  }
+}
