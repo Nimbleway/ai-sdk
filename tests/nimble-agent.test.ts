@@ -523,11 +523,13 @@ describe('nimbleAgentStartRun — request mapping', () => {
     expect(gated.calls.run).toHaveLength(0);
   });
 
-  it('clamps a model max request before any budget gate or create request', async () => {
-    const capped = scriptedRunsClient();
-    await runStart({ client: capped.client }, { task: 't', effort: 'max' });
-    expect(capped.calls.run[0]!.body.effort).toBe('high');
-    expect(capped.calls.create).toHaveLength(0);
+  it('rejects a raw model max request with custom-budget guidance under the default cap', async () => {
+    const gated = scriptedRunsClient();
+    await expect(runStart({ client: gated.client }, { task: 't', effort: 'max' })).rejects.toThrow(
+      /custom budget.*https:\/\/www\.nimbleway\.com\/contact/i,
+    );
+    expect(gated.calls.run).toHaveLength(0);
+    expect(gated.calls.create).toHaveLength(0);
   });
 
   it('wraps a create failure with status and agent context', async () => {

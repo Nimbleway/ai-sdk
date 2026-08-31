@@ -470,6 +470,11 @@ export function nimbleAgentStartRun(config: NimbleAgentStartRunConfig = {}) {
       'different conversation turn or process.',
     inputSchema: nimbleAgentStartRunInputSchema,
     execute: async (input, options): Promise<NimbleAgentStartRunOutput> => {
+      // A raw model-selected `max` must never be silently capped down to a
+      // billable tier. A configured pin still wins over model input.
+      if (!config.effort && input.effort === 'max') {
+        throw new NimbleConfigError(MAX_EFFORT_GUIDANCE);
+      }
       // A configured effort PINS the tier. Otherwise a model-selected tier is
       // clamped to the configured (or conservative default) ceiling.
       const effort = config.effort ??
