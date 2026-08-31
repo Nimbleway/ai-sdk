@@ -96,8 +96,8 @@ describe('agent tools — construction & defaults', () => {
   });
 
   it('exposes conservative defaults', () => {
-    // C03: run creation is single-shot. Effort has no package default.
-    expect(NIMBLE_AGENT_DEFAULTS).not.toHaveProperty('effort');
+    // C03: run creation is single-shot and model-selected effort is bounded.
+    expect(NIMBLE_AGENT_DEFAULTS.effortCap).toBe('high');
     expect(NIMBLE_AGENT_DEFAULTS.createMaxRetries).toBe(0);
     expect(NIMBLE_AGENT_DEFAULTS.waitTimeoutMs).toBe(300_000);
     expect(NIMBLE_AGENT_DEFAULTS.pollIntervalMs).toBe(10_000);
@@ -235,25 +235,38 @@ describe('nimbleAgentStartRun — request mapping', () => {
     });
   });
 
-  it('omits unspecified effort and forwards supported overrides on both routes', async () => {
+  it('omits unspecified effort and caps model-selected effort on both routes', async () => {
     const persistent = scriptedRunsClient();
     await runStart({ client: persistent.client, agentId: AGENT_ID }, { task: 't' });
     expect(persistent.calls.create[0]!.body).not.toHaveProperty('effort');
 
     const explicit = scriptedRunsClient();
     await runStart({ client: explicit.client, agentId: AGENT_ID }, { task: 't', effort: 'x-high' });
-    expect(explicit.calls.create[0]!.body.effort).toBe('x-high');
+    expect(explicit.calls.create[0]!.body.effort).toBe('high');
 
     const generated = scriptedRunsClient();
     await runStart({ client: generated.client }, { task: 't' });
     expect(generated.calls.run[0]!.body).not.toHaveProperty('effort');
   });
 
-  it('promotes gated max with contact guidance and makes no create request', async () => {
-    const gated = scriptedRunsClient();
-    await expect(runStart({ client: gated.client }, { task: 't', effort: 'max' })).rejects.toThrow(
-      /custom budget.*https:\/\/www\.nimbleway\.com\/contact/i,
+  it('honors an explicit effort cap while preserving lower model choices', async () => {
+    const capped = scriptedRunsClient();
+    await runStart(
+      { client: capped.client, agentId: AGENT_ID, effortCap: 'x-high' },
+      { task: 't', effort: 'x-high' },
     );
+    expect(capped.calls.create[0]!.body.effort).toBe('x-high');
+
+    const lower = scriptedRunsClient();
+    await runStart({ client: lower.client }, { task: 't', effort: 'low' });
+    expect(lower.calls.run[0]!.body.effort).toBe('low');
+  });
+
+  it('blocks a model max choice only when the configured cap permits it', async () => {
+    const gated = scriptedRunsClient();
+    await expect(
+      runStart({ client: gated.client, effortCap: 'max' }, { task: 't', effort: 'max' }),
+    ).rejects.toThrow(/custom budget.*https:\/\/www\.nimbleway\.com\/contact/i);
     expect(gated.calls.run).toHaveLength(0);
     expect(gated.calls.create).toHaveLength(0);
   });
@@ -508,6 +521,13 @@ describe('nimbleAgentStartRun — request mapping', () => {
     ).rejects.toThrow(/custom budget/i);
     expect(gated.calls.create).toHaveLength(0);
     expect(gated.calls.run).toHaveLength(0);
+  });
+
+  it('clamps a model max request before any budget gate or create request', async () => {
+    const capped = scriptedRunsClient();
+    await runStart({ client: capped.client }, { task: 't', effort: 'max' });
+    expect(capped.calls.run[0]!.body.effort).toBe('high');
+    expect(capped.calls.create).toHaveLength(0);
   });
 
   it('wraps a create failure with status and agent context', async () => {

@@ -7,6 +7,7 @@ import {
 } from './agent-schemas';
 import type {
   NimbleAgentOutput,
+  NimbleAgentEffort,
   NimbleAgentRawFailedResult,
   NimbleAgentRawResult,
   NimbleAgentRawRun,
@@ -27,12 +28,13 @@ import type {
 import { NimbleAgentRunError, NimbleConfigError } from './errors';
 
 /**
- * Agent tool defaults. Effort intentionally has no package default: omitting
- * it preserves the selected agent/template default. The wait values apply when
+ * Agent tool defaults. A model-selected effort is capped at `high` by default;
+ * omitting effort still preserves the selected agent/template default. The wait values apply when
  * {@link NimbleAgentRunResultConfig.wait} is enabled (it is off by default —
  * the result tool never blocks unless asked).
  */
 export const NIMBLE_AGENT_DEFAULTS = {
+  effortCap: 'high',
   waitTimeoutMs: 300_000,
   pollIntervalMs: 10_000,
   minPollIntervalMs: 100,
@@ -44,6 +46,18 @@ export const NIMBLE_AGENT_DEFAULTS = {
    */
   createMaxRetries: 0,
 } as const;
+
+const EFFORT_ORDER: Record<NimbleAgentEffort, number> = {
+  low: 0,
+  medium: 1,
+  high: 2,
+  'x-high': 3,
+  max: 4,
+};
+
+function capEffort(effort: NimbleAgentEffort, cap: NimbleAgentEffort): NimbleAgentEffort {
+  return EFFORT_ORDER[effort] > EFFORT_ORDER[cap] ? cap : effort;
+}
 
 const MAX_EFFORT_GUIDANCE =
   'Nimble Max effort is available with a custom budget. ' +
@@ -456,9 +470,10 @@ export function nimbleAgentStartRun(config: NimbleAgentStartRunConfig = {}) {
       'different conversation turn or process.',
     inputSchema: nimbleAgentStartRunInputSchema,
     execute: async (input, options): Promise<NimbleAgentStartRunOutput> => {
-      // A configured effort PINS the tier: it bounds cost, so it wins over the
-      // model's choice rather than deferring to it like the other controls.
-      const effort = config.effort ?? input.effort;
+      // A configured effort PINS the tier. Otherwise a model-selected tier is
+      // clamped to the configured (or conservative default) ceiling.
+      const effort = config.effort ??
+        (input.effort ? capEffort(input.effort, config.effortCap ?? NIMBLE_AGENT_DEFAULTS.effortCap) : undefined);
       // Recognize the promotional tier, but stop before credentials or the
       // non-idempotent create until custom-budget access is configured.
       if (effort === 'max') {

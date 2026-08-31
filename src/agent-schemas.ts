@@ -14,22 +14,6 @@ export const NIMBLE_AGENT_EFFORTS = ['low', 'medium', 'high', 'x-high', 'max'] a
 /** A selectable per-run effort override; `max` is gated before create. */
 export type NimbleAgentEffort = (typeof NIMBLE_AGENT_EFFORTS)[number];
 
-/**
- * Effort tiers the API may *report* on a run. Wider than
- * {@link NimbleAgentEffort} because an agent instance configured elsewhere can
- * have been created at a higher tier — responses must stay readable even
- * though this package never requests those tiers.
- */
-export const NIMBLE_AGENT_REPORTED_EFFORTS = [
-  'low',
-  'medium',
-  'high',
-  'x-high',
-  'max',
-] as const;
-
-export type NimbleAgentReportedEffort = (typeof NIMBLE_AGENT_REPORTED_EFFORTS)[number];
-
 /** JSON-schema-shaped object: an open record the AI SDK can serialize. */
 const jsonObjectSchema = z.record(z.string(), z.unknown());
 
@@ -223,6 +207,11 @@ export interface NimbleAgentStartRunConfig extends NimbleAgentToolConfig {
    */
   effort?: NimbleAgentEffort;
   /**
+   * Maximum effort a model-selected value may request. Defaults to `high`.
+   * A developer-set `effort` still pins the exact tier and takes precedence.
+   */
+  effortCap?: NimbleAgentEffort;
+  /**
    * Default one-time operating-context override, used when the model does not
    * supply `skill`. Sent as the run's `skill`.
    */
@@ -311,7 +300,7 @@ export interface NimbleAgentRawRun {
   status: NimbleAgentRunLifecycleStatus;
   /** True while status is `queued` or `running`. */
   is_active: boolean;
-  effort: NimbleAgentReportedEffort;
+  effort: NimbleAgentEffort;
   created_at: string;
   web_search_agent_id: string;
   started_at?: string | null;
@@ -447,7 +436,7 @@ export interface NimbleAgentStartRunOutput {
   /** Interaction ID (conversation-continuation handle). */
   interactionId: string;
   status: NimbleAgentRunLifecycleStatus;
-  effort: NimbleAgentReportedEffort;
+  effort: NimbleAgentEffort;
   createdAt: string;
 }
 
@@ -458,7 +447,7 @@ export interface NimbleAgentRunStatusOutput {
   status: NimbleAgentRunLifecycleStatus;
   /** True while the run is still queued or running. */
   isActive: boolean;
-  effort: NimbleAgentReportedEffort;
+  effort: NimbleAgentEffort;
   createdAt: string;
   startedAt?: string;
   completedAt?: string;
@@ -473,7 +462,7 @@ export interface NimbleAgentRunPendingOutput {
   agentId: string;
   status: 'queued' | 'running';
   isActive: true;
-  effort: NimbleAgentReportedEffort;
+  effort: NimbleAgentEffort;
   createdAt: string;
   startedAt?: string;
 }
@@ -489,7 +478,7 @@ export interface NimbleAgentRunCompletedOutput {
   runId: string;
   agentId: string;
   status: 'completed';
-  effort: NimbleAgentReportedEffort;
+  effort: NimbleAgentEffort;
   createdAt: string;
   startedAt?: string;
   completedAt?: string;

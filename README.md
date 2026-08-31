@@ -169,10 +169,10 @@ See [`examples/agent-research.ts`](examples/agent-research.ts) for the full flow
 
 Two deliberate, non-configurable guarantees:
 
-- **Effort is optional.** When omitted, the selected agent or template default applies (the documented product default is `high`, while template defaults vary). Explicit choices are `low`, `medium`, `high`, `x-high`, and `max`. Max is a custom-budget tier: selecting it stops before run creation with guidance to [contact Nimble](https://www.nimbleway.com/contact); it is never silently downgraded.
+- **Effort is optional and model choices are capped.** When omitted, the selected agent or template default applies (the documented product default is `high`, while template defaults vary). A model-selected tier is capped at `high` by default; set `effortCap` to choose another ceiling. A configured `effort` pins the exact tier and wins over the model. Explicit choices are `low`, `medium`, `high`, `x-high`, and `max`; a pinned `max` stops before run creation with guidance to [contact Nimble](https://www.nimbleway.com/contact).
 - **Run creation is never retried.** Creating a run is billable, non-idempotent, and has no idempotency key, so a "transient" failure that actually reached the server would start (and bill) a second run. Both create routes pass `maxRetries: 0` per request, which also overrides the SDK's default of 2 on an injected client. Read-only status/result calls keep the SDK's normal retry behavior.
 
-If your app needs a hard cost bound, **pin** the tier — `nimbleAgentStartRun({ effort: 'low' })`. A configured `effort` overrides the model's choice rather than deferring to it (the opposite of every other control), so the model can neither omit it nor ask for something costlier. `examples/agent-research.ts` pins `low` this way as its local demo policy; the library itself pins nothing.
+If your app needs a hard cost bound, **pin** the tier — `nimbleAgentStartRun({ effort: 'low' })`. A configured `effort` overrides the model's choice rather than deferring to it (the opposite of every other control), so the model can neither omit it nor ask for something costlier. `effortCap` instead leaves the model free to choose a lower tier while enforcing a ceiling. `examples/agent-research.ts` pins `low` this way as its local demo policy.
 
 Runs still take minutes; the split lifecycle is what keeps that off your request path.
 
@@ -256,6 +256,7 @@ All three agent factories share this config (all fields optional):
 | `inputData` | `object \| object[]` | — | Default records to enrich; the model may override them. |
 | `sources` | `NimbleAgentSourcesInput` | — | Default per-run source guidance; the model may override it. |
 | `effort` | `'low' \| 'medium' \| 'high' \| 'x-high' \| 'max'` | — | **Pins** the tier: overrides the model's choice, for a hard cost bound. |
+| `effortCap` | `'low' \| 'medium' \| 'high' \| 'x-high' \| 'max'` | `'high'` | Ceiling for a model-selected tier; lower choices remain unchanged. |
 
 `nimbleAgentRunResult(config)` adds:
 
