@@ -9,8 +9,8 @@ importers:
   .:
     dependencies:
       '@nimble-way/nimble-js':
-        specifier: ^1.1.0
-        version: 1.1.0
+        specifier: ^1.2.0
+        version: 1.2.0
     devDependencies:
       '@types/node':
         specifier: ^22.0.0
@@ -549,8 +549,8 @@ packages:
   '@jridgewell/trace-mapping@0.3.31':
     resolution: {integrity: sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw==}
 
-  '@nimble-way/nimble-js@1.1.0':
-    resolution: {integrity: sha512-CAE3Umz/dCoF8ts3H5n3BybhMojKI4QLD4kL2ZFbOIxDDHQ8v+40n31Zd339rc40Kjcb4SBj7v9qtmDCCetigQ==}
+  '@nimble-way/nimble-js@1.2.0':
+    resolution: {integrity: sha512-6pa4DIq+243+d499VphaT06bOWj9BTDAlwEhbLYxmVpnHeLZi1XCvJljl1tsciX813U6yVPr5hF0+1tdA8AmPw==}
 
   '@opentelemetry/api@1.9.1':
     resolution: {integrity: sha512-gLyJlPHPZYdAk1JENA9LeHejZe1Ti77/pTeFm/nMXmQH/HFZlcS/O2XJB+L8fkbrNSqhdtlvjBVjxwUYanNH5Q==}
@@ -1381,7 +1381,7 @@ snapshots:
       '@jridgewell/resolve-uri': 3.1.2
       '@jridgewell/sourcemap-codec': 1.5.5
 
-  '@nimble-way/nimble-js@1.1.0': {}
+  '@nimble-way/nimble-js@1.2.0': {}
 
   '@opentelemetry/api@1.9.1': {}
 

@@ -7,8 +7,9 @@ packages:
 allowBuilds:
   esbuild: true
 
-# nimble-js 1.1.0 (first release with agents.runs) was freshly published at
-# adoption time; the exact resolution is pinned by the lockfile and exercised
-# by CI. Remove the entry once the version ages past pnpm's release-age gate.
+# nimble-js 1.2.0 (first release with typed per-run skill/use_case controls)
+# was freshly published at adoption time; the exact resolution is pinned by
+# the lockfile and exercised by the contract suite. Remove the exclusions once
+# each version ages past pnpm's release-age gate.
 minimumReleaseAgeExclude:
-  - '@nimble-way/nimble-js@1.1.0'
+  - '@nimble-way/nimble-js@1.2.0'
